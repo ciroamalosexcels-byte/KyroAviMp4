@@ -204,15 +204,17 @@ private suspend fun convertVideo(
         val error = runFfmpeg(
             context,
             arrayOf(
-                "-y", "-i", input.absolutePath,
+                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
                 "-map", "0:v:0", "-map", "0:a?",
                 "-vf", "scale=$width:ih",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                "-c:v", "mpeg4", "-q:v", "4",
                 "-c:a", "aac", "-movflags", "+faststart", output.absolutePath
             )
         )
         if (error != null) {
-            return "Error al convertir: ${error.lineSequence().firstOrNull() ?: "FFmpeg no pudo procesar el video"}"
+            val detail = error.lineSequence().firstOrNull { it.isNotBlank() }
+                ?: "FFmpeg no pudo procesar el video"
+            return "Error al convertir: $detail"
         }
         onStatus("Guardando resultado...")
         val folder = DocumentFile.fromTreeUri(context, folderUri) ?: return "Error: carpeta de salida no disponible"
