@@ -2,7 +2,7 @@ package com.kyro.avi2mp4
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -50,13 +50,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-import com.github.pao11.libffmpeg.FFmpegRunner
+import com.arthenica.mobileffmpeg.Config
+import com.arthenica.mobileffmpeg.FFmpeg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.coroutines.resume
 
 private data class VideoJob(
     val uri: Uri,
@@ -84,9 +83,18 @@ private fun AviConverterApp() {
     var outputFolderName by remember { mutableStateOf("Sin carpeta seleccionada") }
     var targetWidth by remember { mutableStateOf(preferences.getString("target_width", "1280") ?: "1280") }
     var preview by remember { mutableStateOf<VideoPreview?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
     var completed by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
+
+    fun loadPreview(uri: Uri) {
+        previewLoading = true
+        scope.launch {
+            preview = context.videoPreview(uri)
+            previewLoading = false
+        }
+    }
 
     val pickVideos = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -101,7 +109,7 @@ private fun AviConverterApp() {
                 // Some providers grant read access for this app session only.
             }
             if (jobs.none { it.uri == uri }) jobs += VideoJob(uri, context.displayName(uri))
-            if (preview == null) preview = context.videoPreview(uri)
+            if (preview == null && !previewLoading) loadPreview(uri)
         }
     }
     val pickFolder = rememberLauncherForActivityResult(
@@ -151,6 +159,7 @@ private fun AviConverterApp() {
                     }
                 }
                 Text("Salida: $outputFolderName", style = MaterialTheme.typography.bodySmall)
+                if (previewLoading) Text("Generando vista previa...")
                 preview?.let { frame ->
                     val width = targetWidth.toIntOrNull() ?: frame.width
                     val ratio = width.toFloat() / frame.width
@@ -185,7 +194,7 @@ private fun AviConverterApp() {
                             withContext(Dispatchers.Main) { running = false }
                         }
                     },
-                    enabled = !running && jobs.isNotEmpty() && outputFolder != null &&
+                    enabled = !running && !previewLoading && jobs.isNotEmpty() && outputFolder != null &&
                         targetWidth.toIntOrNull()?.let { it >= 2 && it % 2 == 0 } == true,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -199,7 +208,7 @@ private fun AviConverterApp() {
                     items(jobs, key = { it.uri }) { job ->
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            modifier = Modifier.clickable(enabled = !running) { preview = context.videoPreview(job.uri) }
+                            modifier = Modifier.clickable(enabled = !running) { loadPreview(job.uri) }
                         ) {
                             Column(Modifier.padding(12.dp)) {
                                 Text(job.name, fontWeight = FontWeight.Medium)
@@ -235,13 +244,11 @@ private suspend fun convertVideo(
             ?: return "Error: no se pudo leer el archivo"
         onStatus("Convirtiendo a MP4...")
         val error = runFfmpeg(
-            context,
             arrayOf(
                 "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
                 "-vf", "scale=$width:ih",
                 "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
-                // FFmpeg 2.4.2 bundles AAC as an experimental encoder.
-                "-c:a", "aac", "-strict", "-2", "-movflags", "+faststart", output.absolutePath
+                "-c:a", "aac", "-movflags", "+faststart", output.absolutePath
             )
         )
         if (error != null) {
@@ -279,18 +286,11 @@ private fun uniqueName(folder: DocumentFile, initial: String): String {
     return name
 }
 
-private suspend fun runFfmpeg(context: Context, arguments: Array<String>): String? =
-    suspendCancellableCoroutine { continuation ->
-        FFmpegRunner.execute(context, arguments, object : FFmpegRunner.Callback {
-                override fun onSuccess() {
-                    if (continuation.isActive) continuation.resume(null)
-                }
-
-                override fun onFailure(message: String) {
-                    if (continuation.isActive) continuation.resume(message)
-                }
-            })
-    }
+private fun runFfmpeg(arguments: Array<String>): String? {
+    val returnCode = FFmpeg.execute(arguments)
+    if (returnCode == Config.RETURN_CODE_SUCCESS) return null
+    return Config.getLastCommandOutput().orEmpty()
+}
 
 private fun Context.displayName(uri: Uri): String {
     contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -299,19 +299,27 @@ private fun Context.displayName(uri: Uri): String {
     return uri.lastPathSegment ?: "Video sin nombre"
 }
 
-private fun Context.videoPreview(uri: Uri): VideoPreview? {
-    val retriever = MediaMetadataRetriever()
-    return try {
-        retriever.setDataSource(this, uri)
-        val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
-        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
-            ?: bitmap.width
-        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
-            ?: bitmap.height
-        VideoPreview(bitmap, width, height)
+private suspend fun Context.videoPreview(uri: Uri): VideoPreview? = withContext(Dispatchers.IO) {
+    val input = File(cacheDir, "preview_source_${System.nanoTime()}.avi")
+    val image = File(cacheDir, "preview_frame_${System.nanoTime()}.jpg")
+    try {
+        contentResolver.openInputStream(uri)?.use { source ->
+            input.outputStream().use { target -> source.copyTo(target) }
+        } ?: return@withContext null
+        val error = runFfmpeg(
+            arrayOf(
+                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
+                "-frames:v", "1", "-vf", "scale=640:-2", image.absolutePath
+            )
+        )
+        if (error != null || !image.isFile) return@withContext null
+        BitmapFactory.decodeFile(image.absolutePath)?.let { bitmap ->
+            VideoPreview(bitmap, bitmap.width, bitmap.height)
+        }
     } catch (_: Exception) {
         null
     } finally {
-        retriever.release()
+        input.delete()
+        image.delete()
     }
 }
