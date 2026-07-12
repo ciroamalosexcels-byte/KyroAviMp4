@@ -238,10 +238,10 @@ private suspend fun convertVideo(
             context,
             arrayOf(
                 "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
-                "-map", "0:v:0", "-map", "0:a?",
                 "-vf", "scale=$width:ih",
-                "-c:v", "mpeg4", "-q:v", "4",
-                "-c:a", "aac", "-movflags", "+faststart", output.absolutePath
+                "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
+                // FFmpeg 2.4.2 bundles AAC as an experimental encoder.
+                "-c:a", "aac", "-strict", "-2", "-movflags", "+faststart", output.absolutePath
             )
         )
         if (error != null) {
