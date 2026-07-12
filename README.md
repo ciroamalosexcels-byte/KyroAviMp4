@@ -13,9 +13,9 @@ Las conversiones se ejecutan de una en una para evitar que varios procesos de vi
 
 ## Tecnologia
 
-Usa `ffmpeg-kit-full-gpl`, que incluye FFmpeg y `libx264`, con el filtro `scale=ANCHO:ih`. Esto conserva el alto original y no aplica recorte ni conserva automaticamente la proporcion, que es lo requerido para estirar o estrechar la imagen.
+Usa `ffmpeg-android`, que incluye un ejecutable FFmpeg, con el filtro `scale=ANCHO:ih`. Esto conserva el alto original y no aplica recorte ni conserva automaticamente la proporcion, que es lo requerido para estirar o estrechar la imagen.
 
-El paquete `full-gpl` incorpora componentes GPL. Revise sus obligaciones de licencia antes de distribuir una version de la aplicacion.
+FFmpeg puede incluir componentes con requisitos de licencia propios. Revise las licencias de sus codecs antes de distribuir la aplicacion.
 
 ## APK en GitHub Actions
 

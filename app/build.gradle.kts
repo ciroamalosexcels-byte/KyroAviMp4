@@ -38,6 +38,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("com.google.android.material:material:1.12.0")
-    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0-2")
+    implementation("io.github.pao11:ffmpeg-android:1.1.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
