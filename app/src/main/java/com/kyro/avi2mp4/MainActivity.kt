@@ -1,6 +1,8 @@
 package com.kyro.avi2mp4
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -19,6 +21,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -39,6 +44,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -57,6 +64,8 @@ private data class VideoJob(
     val status: String = "En espera"
 )
 
+private data class VideoPreview(val bitmap: Bitmap, val width: Int, val height: Int)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,10 +78,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AviConverterApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val preferences = remember { context.getSharedPreferences("converter", Context.MODE_PRIVATE) }
     val jobs = remember { mutableStateListOf<VideoJob>() }
     var outputFolder by remember { mutableStateOf<Uri?>(null) }
     var outputFolderName by remember { mutableStateOf("Sin carpeta seleccionada") }
-    var targetWidth by remember { mutableStateOf("1280") }
+    var targetWidth by remember { mutableStateOf(preferences.getString("target_width", "1280") ?: "1280") }
+    var preview by remember { mutableStateOf<VideoPreview?>(null) }
     var running by remember { mutableStateOf(false) }
     var completed by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -90,6 +101,7 @@ private fun AviConverterApp() {
                 // Some providers grant read access for this app session only.
             }
             if (jobs.none { it.uri == uri }) jobs += VideoJob(uri, context.displayName(uri))
+            if (preview == null) preview = context.videoPreview(uri)
         }
     }
     val pickFolder = rememberLauncherForActivityResult(
@@ -120,7 +132,10 @@ private fun AviConverterApp() {
                 Text("Convierte varios videos y modifica únicamente su ancho. El alto se conserva, por lo que la imagen se estira o se estrecha sin recortarse.")
                 OutlinedTextField(
                     value = targetWidth,
-                    onValueChange = { targetWidth = it.filter(Char::isDigit) },
+                    onValueChange = {
+                        targetWidth = it.filter(Char::isDigit)
+                        preferences.edit().putString("target_width", targetWidth).apply()
+                    },
                     label = { Text("Ancho de salida (px)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
@@ -136,6 +151,21 @@ private fun AviConverterApp() {
                     }
                 }
                 Text("Salida: $outputFolderName", style = MaterialTheme.typography.bodySmall)
+                preview?.let { frame ->
+                    val width = targetWidth.toIntOrNull() ?: frame.width
+                    val ratio = width.toFloat() / frame.width
+                    val displayedRatio = frame.width.toFloat() * ratio / frame.height
+                    Text("Vista previa del ancho", fontWeight = FontWeight.Medium)
+                    Image(
+                        bitmap = frame.bitmap.asImageBitmap(),
+                        contentDescription = "Vista previa del video deformada al ancho elegido",
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height((220f / displayedRatio.coerceIn(0.3f, 3f)).dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                }
                 Button(
                     onClick = {
                         val width = targetWidth.toIntOrNull()
@@ -167,7 +197,10 @@ private fun AviConverterApp() {
                 HorizontalDivider()
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(jobs, key = { it.uri }) { job ->
-                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.clickable(enabled = !running) { preview = context.videoPreview(job.uri) }
+                        ) {
                             Column(Modifier.padding(12.dp)) {
                                 Text(job.name, fontWeight = FontWeight.Medium)
                                 Spacer(Modifier.height(3.dp))
@@ -264,4 +297,21 @@ private fun Context.displayName(uri: Uri): String {
         if (cursor.moveToFirst()) return cursor.getString(0)
     }
     return uri.lastPathSegment ?: "Video sin nombre"
+}
+
+private fun Context.videoPreview(uri: Uri): VideoPreview? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(this, uri)
+        val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            ?: bitmap.width
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            ?: bitmap.height
+        VideoPreview(bitmap, width, height)
+    } catch (_: Exception) {
+        null
+    } finally {
+        retriever.release()
+    }
 }
