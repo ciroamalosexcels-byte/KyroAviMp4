@@ -42,8 +42,7 @@ import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-import com.github.pao11.libffmpeg.FFmpeg
-import com.github.pao11.libffmpeg.FFmpegExecuteResponseHandler
+import com.github.pao11.libffmpeg.FFmpegRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -246,25 +245,15 @@ private fun uniqueName(folder: DocumentFile, initial: String): String {
 
 private suspend fun runFfmpeg(context: Context, arguments: Array<String>): String? =
     suspendCancellableCoroutine { continuation ->
-        try {
-            FFmpeg.getInstance(context).execute(arguments, object : FFmpegExecuteResponseHandler {
-                override fun onSuccess(message: String) {
+        FFmpegRunner.execute(context, arguments, object : FFmpegRunner.Callback {
+                override fun onSuccess() {
                     if (continuation.isActive) continuation.resume(null)
                 }
 
                 override fun onFailure(message: String) {
                     if (continuation.isActive) continuation.resume(message)
                 }
-
-                override fun onProgress(message: String) = Unit
-
-                override fun onStart() = Unit
-
-                override fun onFinish() = Unit
             })
-        } catch (error: Exception) {
-            if (continuation.isActive) continuation.resume(error.message ?: "No se pudo iniciar FFmpeg")
-        }
     }
 
 private fun Context.displayName(uri: Uri): String {
