@@ -65,6 +65,11 @@ private data class VideoJob(
 
 private data class VideoPreview(val bitmap: Bitmap, val width: Int, val height: Int)
 
+private data class FfmpegResult(val returnCode: Int, val output: String) {
+    val succeeded: Boolean
+        get() = returnCode == Config.RETURN_CODE_SUCCESS
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,7 +137,7 @@ private fun AviConverterApp() {
 
     MaterialTheme {
         Column(Modifier.fillMaxSize()) {
-            TopAppBar(title = { Text("AVI a MP4", fontWeight = FontWeight.Bold) })
+            TopAppBar(title = { Text("AVI a MP4 ${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold) })
             Column(
                 modifier = Modifier.padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -208,7 +213,7 @@ private fun AviConverterApp() {
                     items(jobs, key = { it.uri }) { job ->
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                            modifier = Modifier.clickable(enabled = !running) { loadPreview(job.uri) }
+                            modifier = Modifier.clickable(enabled = !running && !previewLoading) { loadPreview(job.uri) }
                         ) {
                             Column(Modifier.padding(12.dp)) {
                                 Text(job.name, fontWeight = FontWeight.Medium)
@@ -243,18 +248,14 @@ private suspend fun convertVideo(
         }
             ?: return "Error: no se pudo leer el archivo"
         onStatus("Convirtiendo a MP4...")
-        val error = runFfmpeg(
-            arrayOf(
-                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
-                "-vf", "scale=$width:ih",
-                "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-movflags", "+faststart", output.absolutePath
-            )
-        )
-        if (error != null) {
-            val detail = error.lineSequence().firstOrNull { it.isNotBlank() }
-                ?: "FFmpeg no pudo procesar el video"
-            return "Error al convertir: $detail"
+        var conversion = runFfmpeg(conversionArguments(input, output, width, includeAudio = true))
+        if (!conversion.succeeded || !output.isFile || output.length() == 0L) {
+            output.delete()
+            onStatus("Reintentando sin audio...")
+            conversion = runFfmpeg(conversionArguments(input, output, width, includeAudio = false))
+        }
+        if (!conversion.succeeded || !output.isFile || output.length() == 0L) {
+            return "Error al convertir (${conversion.returnCode}): ${conversion.failureDetail()}"
         }
         onStatus("Guardando resultado...")
         val folder = DocumentFile.fromTreeUri(context, folderUri) ?: return "Error: carpeta de salida no disponible"
@@ -274,6 +275,35 @@ private suspend fun convertVideo(
     }
 }
 
+private fun conversionArguments(
+    input: File,
+    output: File,
+    width: Int,
+    includeAudio: Boolean
+): Array<String> = buildList {
+    addAll(
+        listOf(
+            "-y", "-hide_banner", "-loglevel", "warning",
+            "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+            "-i", input.absolutePath,
+            "-map", "0:v:0",
+            "-vf", "scale=$width:trunc(ih/2)*2",
+            "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p"
+        )
+    )
+    if (includeAudio) {
+        addAll(listOf("-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ar", "44100"))
+    } else {
+        add("-an")
+    }
+    addAll(
+        listOf(
+            "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024",
+            "-movflags", "+faststart", output.absolutePath
+        )
+    )
+}.toTypedArray()
+
 private fun uniqueName(folder: DocumentFile, initial: String): String {
     val stem = initial.substringBeforeLast('.', initial)
     val extension = initial.substringAfterLast('.', "")
@@ -286,10 +316,20 @@ private fun uniqueName(folder: DocumentFile, initial: String): String {
     return name
 }
 
-private fun runFfmpeg(arguments: Array<String>): String? {
+private fun runFfmpeg(arguments: Array<String>): FfmpegResult {
     val returnCode = FFmpeg.execute(arguments)
-    if (returnCode == Config.RETURN_CODE_SUCCESS) return null
-    return Config.getLastCommandOutput().orEmpty()
+    return FfmpegResult(returnCode, Config.getLastCommandOutput().orEmpty())
+}
+
+private fun FfmpegResult.failureDetail(): String {
+    val detail = output.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .toList()
+        .takeLast(4)
+        .joinToString(" | ")
+        .take(500)
+    return detail.ifEmpty { "FFmpeg termino sin detalles" }
 }
 
 private fun Context.displayName(uri: Uri): String {
@@ -306,13 +346,15 @@ private suspend fun Context.videoPreview(uri: Uri): VideoPreview? = withContext(
         contentResolver.openInputStream(uri)?.use { source ->
             input.outputStream().use { target -> source.copyTo(target) }
         } ?: return@withContext null
-        val error = runFfmpeg(
+        val result = runFfmpeg(
             arrayOf(
-                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
-                "-frames:v", "1", "-vf", "scale=640:-2", image.absolutePath
+                "-y", "-hide_banner", "-loglevel", "warning",
+                "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+                "-i", input.absolutePath,
+                "-an", "-frames:v", "1", "-vf", "scale=640:-2", image.absolutePath
             )
         )
-        if (error != null || !image.isFile) return@withContext null
+        if (!result.succeeded || !image.isFile) return@withContext null
         BitmapFactory.decodeFile(image.absolutePath)?.let { bitmap ->
             VideoPreview(bitmap, bitmap.width, bitmap.height)
         }

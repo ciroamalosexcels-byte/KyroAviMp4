@@ -13,7 +13,7 @@ Las conversiones se ejecutan de una en una para evitar que varios procesos de vi
 
 ## Tecnologia
 
-Usa `mobile-ffmpeg`, que ejecuta FFmpeg nativamente dentro de la aplicacion, con el filtro `scale=ANCHO:ih`. Esto conserva el alto original y no aplica recorte ni conserva automaticamente la proporcion, que es lo requerido para estirar o estrechar la imagen. El MP4 se genera con video MPEG-4 en `yuv420p` y audio AAC. La vista previa se extrae con FFmpeg para que tambien funcione con AVI que Android no puede reproducir directamente.
+Usa `mobile-ffmpeg`, que ejecuta FFmpeg nativamente dentro de la aplicacion. Esto conserva el alto original, salvo el ajuste de un pixel necesario si es impar para generar `yuv420p`, y no aplica recorte ni conserva automaticamente la proporcion. Para AVI antiguos se regeneran timestamps, se ignoran fotogramas corruptos y se reintenta sin audio si la pista de sonido no es compatible. La vista previa tambien se extrae con FFmpeg.
 
 FFmpeg puede incluir componentes con requisitos de licencia propios. Revise las licencias de sus codecs antes de distribuir la aplicacion.
 

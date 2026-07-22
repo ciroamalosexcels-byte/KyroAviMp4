@@ -16,7 +16,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class AviConversionTest {
     @Test
-    fun convertsMjpegAviAndExtractsPreview() {
+    fun convertsMjpegAviWithPcmAudioAndExtractsPreview() {
         val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
         val input = File(cacheDir, "fixture.avi")
         val preview = File(cacheDir, "fixture-preview.jpg")
@@ -24,21 +24,30 @@ class AviConversionTest {
 
         try {
             assertFfmpegSuccess(
-                "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=1", "-t", "1",
-                "-c:v", "mjpeg", "-q:v", "2", input.absolutePath
+                "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=5",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=22050",
+                "-t", "1", "-c:v", "mjpeg", "-q:v", "2", "-c:a", "pcm_s16le",
+                input.absolutePath
             )
             assertTrue(input.isFile && input.length() > 0)
 
             assertFfmpegSuccess(
-                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
-                "-frames:v", "1", "-vf", "scale=640:-2", preview.absolutePath
+                "-y", "-hide_banner", "-loglevel", "warning",
+                "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+                "-i", input.absolutePath,
+                "-an", "-frames:v", "1", "-vf", "scale=640:-2", preview.absolutePath
             )
             assertNotNull(BitmapFactory.decodeFile(preview.absolutePath))
 
             assertFfmpegSuccess(
-                "-y", "-hide_banner", "-loglevel", "error", "-i", input.absolutePath,
-                "-vf", "scale=1280:ih", "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-movflags", "+faststart", output.absolutePath
+                "-y", "-hide_banner", "-loglevel", "warning",
+                "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+                "-i", input.absolutePath,
+                "-map", "0:v:0", "-vf", "scale=1280:trunc(ih/2)*2",
+                "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p",
+                "-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+                "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024",
+                "-movflags", "+faststart", output.absolutePath
             )
             assertTrue(output.isFile && output.length() > 0)
 
