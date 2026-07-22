@@ -4,8 +4,8 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.arthenica.mobileffmpeg.Config
-import com.arthenica.mobileffmpeg.FFmpeg
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -67,7 +67,7 @@ class AviConversionTest {
     }
 
     private fun assertFfmpegSuccess(vararg arguments: String) {
-        val returnCode = FFmpeg.execute(arguments)
-        assertEquals(Config.getLastCommandOutput(), Config.RETURN_CODE_SUCCESS, returnCode)
+        val session = FFmpegKit.executeWithArguments(arguments)
+        assertTrue(session.output, ReturnCode.isSuccess(session.returnCode))
     }
 }

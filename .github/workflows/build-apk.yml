@@ -42,12 +42,11 @@ jobs:
         run: gradle :app:assembleDebug --no-daemon
 
       - name: Verify AVI conversion on Android
-        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           target: default
-          arch: x86
+          arch: x86_64
           emulator-boot-timeout: 600
           script: gradle :app:connectedDebugAndroidTest --no-daemon
 

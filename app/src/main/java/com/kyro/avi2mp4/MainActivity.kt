@@ -50,8 +50,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-import com.arthenica.mobileffmpeg.Config
-import com.arthenica.mobileffmpeg.FFmpeg
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -65,10 +65,11 @@ private data class VideoJob(
 
 private data class VideoPreview(val bitmap: Bitmap, val width: Int, val height: Int)
 
-private data class FfmpegResult(val returnCode: Int, val output: String) {
+private data class FfmpegResult(
+    val returnCode: Int,
+    val output: String,
     val succeeded: Boolean
-        get() = returnCode == Config.RETURN_CODE_SUCCESS
-}
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -317,8 +318,13 @@ private fun uniqueName(folder: DocumentFile, initial: String): String {
 }
 
 private fun runFfmpeg(arguments: Array<String>): FfmpegResult {
-    val returnCode = FFmpeg.execute(arguments)
-    return FfmpegResult(returnCode, Config.getLastCommandOutput().orEmpty())
+    val session = FFmpegKit.executeWithArguments(arguments)
+    val returnCode = session.returnCode
+    return FfmpegResult(
+        returnCode = returnCode?.value ?: -1,
+        output = session.output.orEmpty(),
+        succeeded = returnCode != null && ReturnCode.isSuccess(returnCode)
+    )
 }
 
 private fun FfmpegResult.failureDetail(): String {
