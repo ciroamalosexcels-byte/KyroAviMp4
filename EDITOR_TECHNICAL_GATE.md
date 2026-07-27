@@ -46,7 +46,7 @@ Los filtros con valores neutrales se omiten para reducir conversiones de formato
 - Salida MPEG-4/AAC valida, con duracion y dimensiones verificadas por FFprobe.
 - Inventario de encoders AVC expuestos por Android para preparar la prueba en telefonos.
 
-Estado de CI: pendiente de la primera ejecucion de esta prueba.
+Estado de CI: aprobado en https://github.com/ciroamalosexcels-byte/KyroAviMp4/actions/runs/30270640687. La ejecucion valido los cuatro tests Android y omitio correctamente la publicacion porque no cambio la aplicacion.
 
 ## Validacion pendiente en telefonos
 
