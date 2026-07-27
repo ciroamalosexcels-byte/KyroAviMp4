@@ -41,6 +41,9 @@ jobs:
       - name: Assemble debug APK
         run: gradle :app:assembleDebug --no-daemon
 
+      - name: Enable KVM for the Android emulator
+        run: sudo chmod 666 /dev/kvm
+
       - name: Verify AVI conversion on Android
         uses: reactivecircus/android-emulator-runner@v2
         with:
