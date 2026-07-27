@@ -20,11 +20,13 @@ FFmpeg puede incluir componentes con requisitos de licencia propios. Revise las 
 
 El desarrollo futuro del editor se encuentra dividido por etapas en `ROADMAP.md`.
 
-## Editor inicial
+## Editor móvil
 
-La version 1.5 agrega una pantalla de editor separada. Desde `Editar` se pueden importar MP4, reproducir un clip, ordenar la secuencia y ajustar su entrada y salida sin modificar los archivos originales. El proyecto se guarda automaticamente en el dispositivo.
+La version 1.6 incorpora un editor no destructivo separado. Desde `Editar` se pueden importar MP4, reproducir y recortar segmentos, dividir en la posicion actual, reordenar con pulsacion larga y arrastre, eliminar y recuperar cambios con deshacer y rehacer. El proyecto se guarda automaticamente en el dispositivo.
 
-La division de clips, musica, filtros y exportacion del montaje se incorporaran en las siguientes etapas.
+El editor admite una pista de musica MP3 con recorte, posicion, volumen y fundidos. Cada segmento puede ajustar blanco y negro, saturacion, exposicion, contraste, luces, sombras y tintes. `Exportar montaje MP4` compone todos los clips, audio, musica y filtros en un unico archivo MPEG-4/AAC; durante el proceso muestra progreso y permite cancelar.
+
+Los originales nunca se modifican. La version actual mantiene un proyecto unico y aplica los filtros de color al archivo exportado; proxies, preview de color en tiempo real y proyectos multiples siguen planificados.
 
 ## APK en GitHub Actions
 

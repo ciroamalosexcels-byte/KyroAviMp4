@@ -38,7 +38,7 @@ Los criterios, decisiones y resultados de esta fase se registran en `EDITOR_TECH
 - Persistir permisos SAF y ofrecer reconexion cuando un archivo se mueva o pierda acceso.
 - Modelo minimo: `Project`, `Asset`, `TimelineClip`, `MusicTrack` y comandos de historial.
 
-Estado: iniciada en la version 1.5 con un proyecto unico persistente, permisos SAF y clips no destructivos. La migracion a proyectos multiples y Room queda pendiente antes de incorporar historial complejo.
+Estado: proyecto unico persistente con permisos SAF, clips no destructivos, musica, color y migracion automatica desde la version 1.5. El historial reversible vive en memoria durante la sesion. Proyectos multiples y Room siguen pendientes.
 
 ## Fase 2: proxies y recursos visuales
 
@@ -54,14 +54,16 @@ Estado: iniciada en la version 1.5 con un proyecto unico persistente, permisos S
 - Agregar zoom de timeline, ajuste magnetico a bordes y respuesta haptica.
 - Representar cada cambio como comando reversible para deshacer y rehacer.
 
-Estado: primer corte disponible en la version 1.5 con timeline horizontal, seleccion, preview, recorte de entrada/salida y cambio de orden. Division, arrastre directo, zoom y deshacer/rehacer siguen pendientes.
+Estado: version 1.6 con timeline horizontal, miniaturas, seleccion, preview, recorte, division en la posicion de reproduccion, eliminacion, deshacer/rehacer y reordenamiento por pulsacion larga y arrastre. Zoom, ajuste magnetico y respuesta haptica siguen pendientes.
 
 ## Fase 4: musica y color
 
 - Importar un MP3, recortarlo, mover su inicio, cambiar volumen y aplicar fundidos.
 - Mostrar su forma de onda debajo de la pista de video.
 - Usar un modelo comun de parametros para que preview y exportacion coincidan.
-- Aplicar brillo, contraste y saturacion con `eq`; exposicion con `exposure`; luces y sombras con `curves`; tintes con `colorbalance`.
+- Aplicar saturacion y blanco y negro con `hue`; exposicion con `exposure`; contraste, luces y sombras con `curves`; tintes con `colorbalance`.
+
+Estado: version 1.6 con una pista de audio persistente, recorte, posicion, volumen, fundidos y representacion debajo del video. Cada segmento guarda controles de color independientes. La preview de color en tiempo real y la forma de onda calculada desde el MP3 siguen pendientes.
 
 ## Fase 5: exportacion conjunta
 
@@ -70,6 +72,8 @@ Estado: primer corte disponible en la version 1.5 con timeline horizontal, selec
 - Mezclar audio original y musica con `amix`, generando silencio en clips sin audio.
 - Codificar una sola vez, mostrar progreso, permitir cancelacion y borrar temporales si falla.
 - Ejecutar exportaciones largas como trabajo en primer plano y copiar el MP4 terminado a la carpeta SAF.
+
+Estado: version 1.6 exporta la secuencia completa en un grafo `filter_complex`, normaliza los segmentos, genera silencio cuando falta audio, mezcla el MP3, aplica color, muestra progreso, permite cancelar y limpia temporales. El servicio en primer plano para continuar con la aplicacion cerrada sigue pendiente.
 
 ## Riesgos principales
 

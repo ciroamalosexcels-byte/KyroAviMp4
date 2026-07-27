@@ -119,17 +119,19 @@ class EditorCapabilityTest {
 
     private companion object {
         val requiredEditorFilters = listOf(
-            "concat", "trim", "atrim", "amix", "hue", "exposure", "curves", "colorbalance"
+            "concat", "trim", "atrim", "amix", "hue", "exposure", "curves", "colorbalance",
+            "fps", "scale", "pad", "setsar", "settb", "aresample", "aformat", "apad",
+            "anullsrc", "volume", "afade", "adelay"
         )
 
         val editorFilterGraph = listOf(
-            "[0:v]trim=start=0.1:end=0.6,setpts=PTS-STARTPTS,hue=s=0,exposure=exposure=0.1,curves=preset=lighter,colorbalance=rs=0.03:bh=0.03,format=yuv420p[clip0v]",
-            "[2:v]trim=start=0.2:end=0.7,setpts=PTS-STARTPTS,hue=s=0.8,format=yuv420p[clip1v]",
+            "[0:v]trim=start=0.1:end=0.6,setpts=PTS-STARTPTS,fps=10,scale=160:120:force_original_aspect_ratio=decrease,pad=160:120:(ow-iw)/2:(oh-ih)/2,setsar=1,hue=s=0,exposure=exposure=0.1,curves=preset=lighter,colorbalance=rs=0.03:bh=0.03,format=yuv420p,settb=AVTB[clip0v]",
+            "[2:v]trim=start=0.2:end=0.7,setpts=PTS-STARTPTS,fps=10,scale=160:120,setsar=1,hue=s=0.8,format=yuv420p,settb=AVTB[clip1v]",
             "[clip0v][clip1v]concat=n=2:v=1:a=0[video]",
-            "[1:a]atrim=start=0.1:end=0.6,asetpts=PTS-STARTPTS[clip0a]",
-            "[3:a]atrim=start=0.2:end=0.7,asetpts=PTS-STARTPTS[clip1a]",
+            "[1:a]atrim=start=0.1:end=0.6,asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=whole_dur=0.5,atrim=duration=0.5[clip0a]",
+            "anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=0.5,asetpts=N/SR/TB[clip1a]",
             "[clip0a][clip1a]concat=n=2:v=0:a=1[clips]",
-            "[4:a]atrim=duration=1,asetpts=PTS-STARTPTS,volume=0.2[music]",
+            "[4:a]atrim=duration=0.8,asetpts=PTS-STARTPTS,volume=0.2,afade=t=in:st=0:d=0.1,afade=t=out:st=0.7:d=0.1,adelay=delays=100:all=1,apad=whole_dur=1,atrim=duration=1[music]",
             "[clips][music]amix=inputs=2:duration=first:normalize=0[audio]"
         ).joinToString(";")
     }
