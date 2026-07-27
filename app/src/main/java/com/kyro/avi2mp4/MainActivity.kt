@@ -1,18 +1,21 @@
 package com.kyro.avi2mp4
 
+import android.content.ActivityNotFoundException
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.widget.MediaController
+import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +24,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,11 +34,13 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -64,17 +69,18 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.documentfile.provider.DocumentFile
 import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -112,7 +118,29 @@ private data class VideoJob(
     val status: String = "En espera"
 )
 
-private data class VideoPreview(val bitmap: Bitmap, val width: Int, val height: Int)
+private data class VideoPreview(val file: File, val width: Int, val height: Int)
+
+private enum class OutputAspect(val label: String, val width: Int, val height: Int) {
+    ORIGINAL("Original", 0, 0),
+    SQUARE("1:1", 1, 1),
+    PORTRAIT("3:4", 3, 4),
+    LANDSCAPE("4:3", 4, 3),
+    WIDESCREEN("16:9", 16, 9);
+
+    val ratio: Float?
+        get() = if (this == ORIGINAL) null else width.toFloat() / height
+
+    val description: String
+        get() = if (this == ORIGINAL) {
+            "Mantiene la proporción original del video."
+        } else {
+            "Ajusta el video al formato $label sin recortarlo."
+        }
+
+    companion object {
+        fun fromStored(value: String?): OutputAspect = entries.firstOrNull { it.name == value } ?: ORIGINAL
+    }
+}
 
 private data class FfmpegResult(
     val returnCode: Int,
@@ -130,12 +158,29 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AviConverterApp() {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val preferences = remember { context.getSharedPreferences("converter", Context.MODE_PRIVATE) }
     val jobs = remember { mutableStateListOf<VideoJob>() }
-    var outputFolder by remember { mutableStateOf<Uri?>(null) }
-    var outputFolderName by remember { mutableStateOf("Sin carpeta seleccionada") }
-    var targetWidth by remember { mutableStateOf(preferences.getString("target_width", "1280") ?: "1280") }
+    val restoredOutputFolder = remember {
+        preferences.getString("output_folder_uri", null)?.let(Uri::parse)
+    }
+    var outputFolder by remember { mutableStateOf(restoredOutputFolder) }
+    var outputFolderName by remember {
+        mutableStateOf(
+            preferences.getString("output_folder_name", null)
+                ?: restoredOutputFolder?.let {
+                    runCatching { DocumentFile.fromTreeUri(context, it)?.name }.getOrNull()
+                }
+                ?: "Sin carpeta seleccionada"
+        )
+    }
+    var lastInputLocation by remember {
+        mutableStateOf(preferences.getString("input_location_uri", null)?.let(Uri::parse))
+    }
+    var targetWidth by remember { mutableStateOf(preferences.getString("target_width", "1010") ?: "1010") }
+    var outputAspect by remember {
+        mutableStateOf(OutputAspect.fromStored(preferences.getString("output_aspect", null)))
+    }
     var preview by remember { mutableStateOf<VideoPreview?>(null) }
     var previewLoading by remember { mutableStateOf(false) }
     var activeUri by remember { mutableStateOf<Uri?>(null) }
@@ -145,6 +190,7 @@ private fun AviConverterApp() {
     val scope = rememberCoroutineScope()
 
     fun loadPreview(uri: Uri) {
+        preview?.file?.delete()
         activeUri = uri
         preview = null
         previewLoading = true
@@ -159,12 +205,18 @@ private fun AviConverterApp() {
         preferences.edit().putString("target_width", targetWidth).apply()
     }
 
+    fun updateAspect(aspect: OutputAspect) {
+        outputAspect = aspect
+        preferences.edit().putString("output_aspect", aspect.name).apply()
+    }
+
     fun removeJob(job: VideoJob) {
         val wasActive = activeUri == job.uri
         jobs.remove(job)
         summary = null
         if (wasActive) {
             activeUri = null
+            preview?.file?.delete()
             preview = null
             jobs.firstOrNull()?.let { loadPreview(it.uri) }
         }
@@ -173,14 +225,22 @@ private fun AviConverterApp() {
     fun clearJobs() {
         jobs.clear()
         activeUri = null
+        preview?.file?.delete()
         preview = null
         completed = 0
         summary = null
     }
 
     val pickVideos = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val resultIntent = result.data ?: return@rememberLauncherForActivityResult
+        val uris = buildList {
+            resultIntent.clipData?.let { clip ->
+                repeat(clip.itemCount) { index -> add(clip.getItemAt(index).uri) }
+            }
+            resultIntent.data?.let(::add)
+        }.distinct()
         uris.forEach { uri ->
             try {
                 context.contentResolver.takePersistableUriPermission(
@@ -194,6 +254,10 @@ private fun AviConverterApp() {
                 jobs += VideoJob(uri, context.displayName(uri), context.fileSize(uri))
             }
             if (activeUri == null && !previewLoading) loadPreview(uri)
+        }
+        uris.firstOrNull()?.let { uri ->
+            lastInputLocation = context.initialDocumentLocation(uri)
+            preferences.edit().putString("input_location_uri", lastInputLocation.toString()).apply()
         }
         summary = null
     }
@@ -212,6 +276,10 @@ private fun AviConverterApp() {
             }
             outputFolder = uri
             outputFolderName = DocumentFile.fromTreeUri(context, uri)?.name ?: "Carpeta elegida"
+            preferences.edit()
+                .putString("output_folder_uri", uri.toString())
+                .putString("output_folder_name", outputFolderName)
+                .apply()
         }
     }
 
@@ -226,7 +294,7 @@ private fun AviConverterApp() {
             var successful = 0
             jobs.indices.forEach { index ->
                 updateJob(jobs, index, "Preparando archivo...")
-                val result = convertVideo(context, jobs[index], folder, width) {
+                val result = convertVideo(context, jobs[index], folder, width, outputAspect) {
                     updateJob(jobs, index, it)
                 }
                 if (result.startsWith("Completado:")) successful++
@@ -242,6 +310,10 @@ private fun AviConverterApp() {
                 }
             }
         }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { preview?.file?.delete() }
     }
 
     val widthValue = targetWidth.toIntOrNull()
@@ -283,7 +355,7 @@ private fun AviConverterApp() {
                                     UploadArea(
                                         enabled = !running && !previewLoading,
                                         compact = jobs.isNotEmpty(),
-                                        onSelect = { pickVideos.launch(arrayOf("video/*")) }
+                                        onSelect = { pickVideos.launch(videoPickerIntent(lastInputLocation)) }
                                     )
 
                                     if (jobs.isNotEmpty()) {
@@ -298,16 +370,21 @@ private fun AviConverterApp() {
                                         PreviewSection(
                                             preview = preview,
                                             loading = previewLoading,
-                                            targetWidth = widthValue
+                                            targetWidth = widthValue,
+                                            outputAspect = outputAspect
                                         )
                                         HorizontalDivider(color = Line)
                                         SettingsSection(
                                             targetWidth = targetWidth,
                                             validWidth = validWidth,
+                                            sourceWidth = preview?.width,
+                                            sourceHeight = preview?.height,
+                                            outputAspect = outputAspect,
                                             outputFolderName = outputFolderName,
                                             enabled = !running,
                                             onWidthChange = ::updateWidth,
-                                            onFolderClick = { pickFolder.launch(null) }
+                                            onAspectChange = ::updateAspect,
+                                            onFolderClick = { pickFolder.launch(outputFolder) }
                                         )
                                     }
 
@@ -319,24 +396,12 @@ private fun AviConverterApp() {
                                         canConvert = jobs.isNotEmpty() && outputFolder != null && validWidth,
                                         summary = summary,
                                         summarySuccess = allSuccessful,
+                                        hasOutputFolder = outputFolder != null,
                                         onConvert = ::startConversion,
-                                        onClear = ::clearJobs
+                                        onClear = ::clearJobs,
+                                        onOpenFolder = { outputFolder?.let(context::openOutputFolder) }
                                     )
                                 }
-                            }
-                        }
-                    }
-                    item {
-                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .widthIn(max = 760.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                InfoCard("FFmpeg nativo", "El motor funciona sin internet y contiene binarios arm64 para Android.")
-                                InfoCard("Vista previa real", "El fotograma se extrae con FFmpeg aunque Android no reproduzca el AVI.")
-                                InfoCard("Conversión por cola", "Los videos se procesan uno por uno para cuidar la memoria del teléfono.")
                             }
                         }
                     }
@@ -584,7 +649,12 @@ private fun StatusBadge(status: String) {
 }
 
 @Composable
-private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth: Int?) {
+private fun PreviewSection(
+    preview: VideoPreview?,
+    loading: Boolean,
+    targetWidth: Int?,
+    outputAspect: OutputAspect
+) {
     Column(modifier = Modifier.padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Vista previa", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
@@ -592,7 +662,7 @@ private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth
             Text(
                 when {
                     loading -> "Generando..."
-                    preview != null -> "Fotograma AVI"
+                    preview != null -> "Muestra MP4 · 8 s"
                     else -> "No disponible"
                 },
                 color = Muted,
@@ -609,13 +679,14 @@ private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(234.dp)
                     .padding(16.dp),
                 contentAlignment = Alignment.Center
             ) {
                 when {
                     loading -> {
                         Column(
-                            modifier = Modifier.fillMaxWidth().height(170.dp),
+                            modifier = Modifier.fillMaxSize(),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
@@ -625,28 +696,47 @@ private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth
                         }
                     }
                     preview != null -> {
-                        val ratio = ((targetWidth ?: preview.width).toFloat() / preview.height.coerceAtLeast(1)).coerceIn(0.55f, 3.5f)
-                        Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF17171C), shadowElevation = 10.dp) {
-                            Image(
-                                bitmap = preview.bitmap.asImageBitmap(),
-                                contentDescription = "Vista previa del video deformada al ancho elegido",
-                                contentScale = ContentScale.FillBounds,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(ratio)
+                        val videoPath = preview.file.absolutePath
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF17171C),
+                            shadowElevation = 10.dp
+                        ) {
+                            AndroidView(
+                                factory = { context ->
+                                    VideoView(context).apply {
+                                        val controls = MediaController(context)
+                                        controls.setAnchorView(this)
+                                        setMediaController(controls)
+                                        tag = videoPath
+                                        setVideoPath(videoPath)
+                                        setOnPreparedListener { player ->
+                                            player.isLooping = true
+                                            start()
+                                        }
+                                    }
+                                },
+                                update = { videoView ->
+                                    if (videoView.tag != videoPath) {
+                                        videoView.tag = videoPath
+                                        videoView.setVideoPath(videoPath)
+                                        videoView.start()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
                     else -> {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .height(170.dp)
+                                .fillMaxSize()
                                 .background(Color(0xFF1C1C22), RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                "No se pudo extraer el fotograma.\nLa conversión puede continuar igualmente.",
+                                "No se pudo generar la muestra reproducible.\nLa conversión puede continuar igualmente.",
                                 modifier = Modifier.padding(20.dp),
                                 color = Color(0xFFD8D8DF),
                                 fontSize = 11.sp,
@@ -659,8 +749,13 @@ private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth
             }
         }
         Spacer(Modifier.height(10.dp))
+        val outputHeight = calculateOutputHeight(targetWidth, preview?.width, preview?.height, outputAspect)
         Text(
-            "La forma del cuadro representa cómo quedará el ancho del MP4.",
+            if (targetWidth != null && outputHeight != null) {
+                "Salida seleccionada: $targetWidth × $outputHeight px · ${outputAspect.label}"
+            } else {
+                "Elegí un ancho válido para calcular el tamaño de salida."
+            },
             modifier = Modifier.fillMaxWidth(),
             color = Muted,
             fontSize = 10.sp,
@@ -673,28 +768,33 @@ private fun PreviewSection(preview: VideoPreview?, loading: Boolean, targetWidth
 private fun SettingsSection(
     targetWidth: String,
     validWidth: Boolean,
+    sourceWidth: Int?,
+    sourceHeight: Int?,
+    outputAspect: OutputAspect,
     outputFolderName: String,
     enabled: Boolean,
     onWidthChange: (String) -> Unit,
+    onAspectChange: (OutputAspect) -> Unit,
     onFolderClick: () -> Unit
 ) {
-    val sliderValue = (targetWidth.toIntOrNull() ?: 1280).coerceIn(320, 3840).toFloat()
+    val sliderValue = (targetWidth.toIntOrNull() ?: 1010).coerceIn(320, 3840).toFloat()
+    val outputHeight = calculateOutputHeight(targetWidth.toIntOrNull(), sourceWidth, sourceHeight, outputAspect)
     Column(modifier = Modifier.padding(18.dp)) {
         Text("Ajustes de salida", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(15.dp))
-        Text("Ancho del video", color = Color(0xFF3F414A), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text("Tamaño del video", color = Color(0xFF3F414A), fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(7.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Slider(
-                value = sliderValue,
-                onValueChange = {
-                    val even = ((it.roundToInt() / 2) * 2).coerceIn(320, 3840)
-                    onWidthChange(even.toString())
-                },
-                enabled = enabled,
-                valueRange = 320f..3840f,
-                modifier = Modifier.weight(1f)
-            )
+        Slider(
+            value = sliderValue,
+            onValueChange = {
+                val even = ((it.roundToInt() / 2) * 2).coerceIn(320, 3840)
+                onWidthChange(even.toString())
+            },
+            enabled = enabled,
+            valueRange = 320f..3840f,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(
                 value = targetWidth,
                 onValueChange = onWidthChange,
@@ -702,15 +802,48 @@ private fun SettingsSection(
                 isError = targetWidth.isNotEmpty() && !validWidth,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
+                label = { Text("Ancho") },
                 suffix = { Text("px", fontSize = 10.sp) },
-                modifier = Modifier.width(112.dp)
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = outputHeight?.toString().orEmpty(),
+                onValueChange = {},
+                enabled = enabled,
+                readOnly = true,
+                singleLine = true,
+                label = { Text("Alto") },
+                placeholder = { Text("-") },
+                suffix = { Text("px", fontSize = 10.sp) },
+                modifier = Modifier.weight(1f)
             )
         }
         Text(
-            "El alto se conserva. El ancho debe ser un número par.",
+            if (sourceWidth != null && sourceHeight != null) {
+                "Origen: $sourceWidth × $sourceHeight px. El ancho de salida debe ser par."
+            } else {
+                "El ancho de salida debe ser un número par."
+            },
             color = if (targetWidth.isNotEmpty() && !validWidth) Danger else Muted,
             fontSize = 10.sp
         )
+        Spacer(Modifier.height(18.dp))
+        Text("Proporción de salida", color = Color(0xFF3F414A), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutputAspect.values().forEach { aspect ->
+                item(key = aspect.name) {
+                    FilterChip(
+                        selected = outputAspect == aspect,
+                        onClick = { onAspectChange(aspect) },
+                        enabled = enabled,
+                        label = { Text(aspect.label) }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(outputAspect.description, color = Muted, fontSize = 10.sp)
         Spacer(Modifier.height(18.dp))
         Text("Carpeta de salida", color = Color(0xFF3F414A), fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
@@ -739,8 +872,10 @@ private fun ActionsSection(
     canConvert: Boolean,
     summary: String?,
     summarySuccess: Boolean,
+    hasOutputFolder: Boolean,
     onConvert: () -> Unit,
-    onClear: () -> Unit
+    onClear: () -> Unit,
+    onOpenFolder: () -> Unit
 ) {
     Column(modifier = Modifier.padding(18.dp)) {
         if (running) {
@@ -786,6 +921,18 @@ private fun ActionsSection(
                 Text("Vaciar lista", color = Muted, fontWeight = FontWeight.Bold)
             }
         }
+        if (hasOutputFolder) {
+            Spacer(Modifier.height(9.dp))
+            OutlinedButton(
+                onClick = onOpenFolder,
+                enabled = !running,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(11.dp),
+                border = BorderStroke(1.dp, Primary.copy(alpha = 0.45f))
+            ) {
+                Text("Abrir ubicación de archivo", color = Primary, fontWeight = FontWeight.Bold)
+            }
+        }
         summary?.let {
             Spacer(Modifier.height(12.dp))
             Surface(
@@ -801,17 +948,6 @@ private fun ActionsSection(
                     lineHeight = 16.sp
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun InfoCard(title: String, description: String) {
-    Surface(shape = RoundedCornerShape(14.dp), color = Color.White.copy(alpha = 0.82f), border = BorderStroke(1.dp, Line)) {
-        Column(Modifier.padding(15.dp)) {
-            Text(title, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(3.dp))
-            Text(description, color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
         }
     }
 }
@@ -843,6 +979,22 @@ private fun formatBytes(bytes: Long?): String {
     }
 }
 
+private fun calculateOutputHeight(
+    width: Int?,
+    sourceWidth: Int?,
+    sourceHeight: Int?,
+    aspect: OutputAspect
+): Int? {
+    if (width == null || width < 2 || width % 2 != 0) return null
+    val rawHeight = aspect.ratio?.let { width / it }
+        ?: if (sourceWidth != null && sourceWidth > 0 && sourceHeight != null && sourceHeight > 0) {
+            width.toFloat() * sourceHeight / sourceWidth
+        } else {
+            return null
+        }
+    return ((rawHeight / 2f).roundToInt() * 2).coerceAtLeast(2)
+}
+
 private suspend fun updateJob(jobs: MutableList<VideoJob>, index: Int, status: String) {
     withContext(Dispatchers.Main) { jobs[index] = jobs[index].copy(status = status) }
 }
@@ -852,6 +1004,7 @@ private suspend fun convertVideo(
     job: VideoJob,
     folderUri: Uri,
     width: Int,
+    aspect: OutputAspect,
     onStatus: suspend (String) -> Unit
 ): String {
     val input = File(context.cacheDir, "source_${System.nanoTime()}.avi")
@@ -862,11 +1015,11 @@ private suspend fun convertVideo(
         }
             ?: return "Error: no se pudo leer el archivo"
         onStatus("Convirtiendo a MP4...")
-        var conversion = runFfmpeg(conversionArguments(input, output, width, includeAudio = true))
+        var conversion = runFfmpeg(conversionArguments(input, output, width, aspect, includeAudio = true))
         if (!conversion.succeeded || !output.isFile || output.length() == 0L) {
             output.delete()
             onStatus("Reintentando sin audio...")
-            conversion = runFfmpeg(conversionArguments(input, output, width, includeAudio = false))
+            conversion = runFfmpeg(conversionArguments(input, output, width, aspect, includeAudio = false))
         }
         if (!conversion.succeeded || !output.isFile || output.length() == 0L) {
             return "Error al convertir (${conversion.returnCode}): ${conversion.failureDetail()}"
@@ -893,15 +1046,21 @@ private fun conversionArguments(
     input: File,
     output: File,
     width: Int,
+    aspect: OutputAspect,
     includeAudio: Boolean
 ): Array<String> = buildList {
+    val scaleFilter = if (aspect == OutputAspect.ORIGINAL) {
+        "scale=$width:-2"
+    } else {
+        "scale=$width:${calculateOutputHeight(width, null, null, aspect)},setsar=1"
+    }
     addAll(
         listOf(
             "-y", "-hide_banner", "-loglevel", "warning",
             "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
             "-i", input.absolutePath,
             "-map", "0:v:0",
-            "-vf", "scale=$width:trunc(ih/2)*2",
+            "-vf", scaleFilter,
             "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p"
         )
     )
@@ -970,27 +1129,81 @@ private fun Context.fileSize(uri: Uri): Long? {
 
 private suspend fun Context.videoPreview(uri: Uri): VideoPreview? = withContext(Dispatchers.IO) {
     val input = File(cacheDir, "preview_source_${System.nanoTime()}.avi")
-    val image = File(cacheDir, "preview_frame_${System.nanoTime()}.jpg")
+    val output = File(cacheDir, "preview_${System.nanoTime()}.mp4")
     try {
         contentResolver.openInputStream(uri)?.use { source ->
             input.outputStream().use { target -> source.copyTo(target) }
         } ?: return@withContext null
+        val probe = FFprobeKit.executeWithArguments(
+            arrayOf(
+                "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0",
+                input.absolutePath
+            )
+        )
+        if (probe.returnCode == null || !ReturnCode.isSuccess(probe.returnCode)) return@withContext null
+        val dimensions = Regex("(\\d+)x(\\d+)").find(probe.output.orEmpty()) ?: return@withContext null
+        val sourceWidth = dimensions.groupValues[1].toIntOrNull() ?: return@withContext null
+        val sourceHeight = dimensions.groupValues[2].toIntOrNull() ?: return@withContext null
         val result = runFfmpeg(
             arrayOf(
                 "-y", "-hide_banner", "-loglevel", "warning",
                 "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
                 "-i", input.absolutePath,
-                "-an", "-frames:v", "1", "-vf", "scale=640:-2", image.absolutePath
+                "-t", "8", "-an", "-vf", "scale=640:-2",
+                "-c:v", "mpeg4", "-q:v", "6", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", output.absolutePath
             )
         )
-        if (!result.succeeded || !image.isFile) return@withContext null
-        BitmapFactory.decodeFile(image.absolutePath)?.let { bitmap ->
-            VideoPreview(bitmap, bitmap.width, bitmap.height)
+        if (!result.succeeded || !output.isFile || output.length() == 0L) {
+            output.delete()
+            return@withContext null
         }
+        VideoPreview(output, sourceWidth, sourceHeight)
     } catch (_: Exception) {
+        output.delete()
         null
     } finally {
         input.delete()
-        image.delete()
+    }
+}
+
+private fun videoPickerIntent(initialLocation: Uri?): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+    addCategory(Intent.CATEGORY_OPENABLE)
+    type = "video/*"
+    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+    initialLocation?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+}
+
+private fun Context.initialDocumentLocation(uri: Uri): Uri {
+    if (!DocumentsContract.isDocumentUri(this, uri)) return uri
+    return runCatching {
+        val documentId = DocumentsContract.getDocumentId(uri)
+        val parentId = documentId.substringBeforeLast('/', missingDelimiterValue = documentId)
+        val authority = uri.authority ?: return@runCatching uri
+        if (parentId == documentId) uri else DocumentsContract.buildDocumentUri(authority, parentId)
+    }.getOrDefault(uri)
+}
+
+private fun Context.openOutputFolder(uri: Uri) {
+    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
+    val viewFolder = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR)
+        addFlags(flags)
+    }
+    try {
+        startActivity(viewFolder)
+    } catch (_: ActivityNotFoundException) {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
+            addFlags(flags)
+        }
+        try {
+            startActivity(picker)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "No hay una aplicación disponible para abrir la carpeta", Toast.LENGTH_LONG).show()
+        }
     }
 }
