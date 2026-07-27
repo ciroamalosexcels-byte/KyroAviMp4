@@ -29,6 +29,8 @@ Este documento registra el alcance solicitado para evolucionar el conversor sin 
 - Definir si la exportacion final usara MPEG-4, H.264 por MediaCodec u otro encoder compatible.
 - Revisar licencias antes de cambiar el paquete FFmpeg.
 
+Los criterios, decisiones y resultados de esta fase se registran en `EDITOR_TECHNICAL_GATE.md`.
+
 ## Fase 1: proyectos y medios
 
 - Separar la interfaz, estado del editor, acceso SAF, probing y exportacion de `MainActivity.kt`.
