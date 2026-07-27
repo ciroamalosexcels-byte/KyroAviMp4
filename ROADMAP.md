@@ -25,7 +25,7 @@ Este documento registra el alcance solicitado para evolucionar el conversor sin 
 ## Fase 0: validacion tecnica
 
 - Confirmar codecs, filtros y aceleracion disponibles en el paquete FFmpeg actual.
-- Validar `concat`, `trim`, `atrim`, `amix`, `eq`, `exposure`, `curves` y `colorbalance`.
+- Validar `concat`, `trim`, `atrim`, `amix`, `hue`, `exposure`, `curves` y `colorbalance`.
 - Definir si la exportacion final usara MPEG-4, H.264 por MediaCodec u otro encoder compatible.
 - Revisar licencias antes de cambiar el paquete FFmpeg.
 

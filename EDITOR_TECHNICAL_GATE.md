@@ -11,6 +11,8 @@ Este documento fija las capacidades que deben comprobarse antes de construir la 
 - Encoders esperados: MPEG-4 Part 2, AAC y `h264_mediacodec`.
 - No incluye `libx264` ni `libopenh264`; por lo tanto, no existe un encoder H.264 de software propio dentro de la APK.
 
+El filtro `eq` tampoco forma parte del paquete porque su implementacion en FFmpeg es GPL. No se cambiara a una variante GPL: los controles se construiran con filtros LGPL ya incluidos.
+
 La aplicacion debe conservar avisos, licencia, fuentes correspondientes y datos de compilacion requeridos por LGPL. Las obligaciones de licencia de software son independientes de posibles patentes de codecs y deben revisarse antes de una distribucion comercial.
 
 ## Decision de arquitectura
@@ -21,12 +23,23 @@ La aplicacion debe conservar avisos, licencia, fuentes correspondientes y datos 
 4. No se construira un puente manual entre FFmpeg y MediaCodec: el paquete actual ya incluye esa integracion.
 5. Media3 se evaluara para reproducir proxies y la linea de tiempo. No sera el exportador principal inicialmente porque no abre AVI y los controles avanzados de luces, sombras y tintes requeririan efectos GL propios.
 
+## Mapeo de controles de imagen
+
+- Blanco y negro y saturacion: `hue`.
+- Contraste: curva maestra en `curves`.
+- Luces y sombras: puntos bajos y altos de `curves`.
+- Iluminacion directa: `exposure`, agregado solo cuando el control no sea neutral.
+- Color de sombras y luces: `colorbalance`.
+- Orden inicial: `hue`, `exposure` opcional, `curves`, `colorbalance`.
+
+Los filtros con valores neutrales se omiten para reducir conversiones de formato y trabajo de CPU.
+
 ## Prueba automatizada
 
 `EditorCapabilityTest.kt` comprueba en Android:
 
 - Configuracion MediaCodec activa y ausencia de componentes GPL/x264.
-- Filtros `concat`, `trim`, `atrim`, `amix`, `eq`, `exposure`, `curves` y `colorbalance`.
+- Filtros `concat`, `trim`, `atrim`, `amix`, `hue`, `exposure`, `curves` y `colorbalance`.
 - Encoders MPEG-4, AAC y H.264 MediaCodec.
 - Decoders MJPEG, H.264, MP3 y PCM.
 - Un montaje real con dos clips recortados, audio concatenado, musica mezclada y correccion de color.
@@ -48,6 +61,8 @@ El emulador confirma integracion, pero no representa el hardware de los celulare
 Hasta completar esa matriz, H.264 queda clasificado como experimental y MPEG-4 sigue siendo el camino estable.
 
 Una codificacion H.264 directa se intento inicialmente en el emulador, pero MediaCodec no completo la operacion dentro de un tiempo razonable. Por eso CI solo comprueba que la integracion y el encoder existen; la ejecucion H.264 se reserva para hardware fisico con timeout y cancelacion.
+
+El primer grafo de color intento usar `eq`; el paquete informo correctamente que no existe, pero el proceso nativo termino con SIGSEGV. El compilador de exportacion debe usar solamente la lista de filtros validada por esta prueba y nunca enviar nombres opcionales no disponibles.
 
 ## Fuentes
 

@@ -27,14 +27,16 @@ class EditorCapabilityTest {
         assertFalse(buildConfiguration, buildConfiguration.contains("--enable-libx264"))
         assertFalse(buildConfiguration, buildConfiguration.contains("--enable-libopenh264"))
 
-        listOf("concat", "trim", "atrim", "amix", "eq", "exposure", "curves", "colorbalance")
-            .forEach { assertListed(filters, it) }
+        requiredEditorFilters.forEach { assertListed(filters, it) }
         listOf("mpeg4", "aac", "h264_mediacodec").forEach { assertListed(encoders, it) }
         listOf("mjpeg", "h264", "mp3", "pcm_s16le").forEach { assertListed(decoders, it) }
     }
 
     @Test
     fun processesTimelineMusicAndColorInOneFilterGraph() {
+        val filters = ffmpegOutput("-hide_banner", "-filters")
+        requiredEditorFilters.forEach { assertListed(filters, it) }
+
         val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
         val output = File(cacheDir, "editor-capability.mp4")
         try {
@@ -116,9 +118,13 @@ class EditorCapabilityTest {
     }
 
     private companion object {
+        val requiredEditorFilters = listOf(
+            "concat", "trim", "atrim", "amix", "hue", "exposure", "curves", "colorbalance"
+        )
+
         val editorFilterGraph = listOf(
-            "[0:v]trim=start=0.1:end=0.6,setpts=PTS-STARTPTS,eq=contrast=1.1:brightness=0.02,exposure=exposure=0.1,curves=preset=lighter,colorbalance=rs=0.03:bh=0.03,format=yuv420p[clip0v]",
-            "[2:v]trim=start=0.2:end=0.7,setpts=PTS-STARTPTS,eq=contrast=0.95:brightness=-0.01,format=yuv420p[clip1v]",
+            "[0:v]trim=start=0.1:end=0.6,setpts=PTS-STARTPTS,hue=s=0,exposure=exposure=0.1,curves=preset=lighter,colorbalance=rs=0.03:bh=0.03,format=yuv420p[clip0v]",
+            "[2:v]trim=start=0.2:end=0.7,setpts=PTS-STARTPTS,hue=s=0.8,format=yuv420p[clip1v]",
             "[clip0v][clip1v]concat=n=2:v=1:a=0[video]",
             "[1:a]atrim=start=0.1:end=0.6,asetpts=PTS-STARTPTS[clip0a]",
             "[3:a]atrim=start=0.2:end=0.7,asetpts=PTS-STARTPTS[clip1a]",
