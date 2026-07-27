@@ -20,6 +20,12 @@ FFmpeg puede incluir componentes con requisitos de licencia propios. Revise las 
 
 El desarrollo futuro del editor se encuentra dividido por etapas en `ROADMAP.md`.
 
+## Editor inicial
+
+La version 1.5 agrega una pantalla de editor separada. Desde `Editar` se pueden importar MP4, reproducir un clip, ordenar la secuencia y ajustar su entrada y salida sin modificar los archivos originales. El proyecto se guarda automaticamente en el dispositivo.
+
+La division de clips, musica, filtros y exportacion del montaje se incorporaran en las siguientes etapas.
+
 ## APK en GitHub Actions
 
 El workflow `.github/workflows/build-apk.yml` compila el proyecto en cada envio a `main`, pull request y ejecucion manual. Al terminar correctamente, abra la ejecucion en la pestana **Actions** del repositorio y descargue el artefacto `KyroAviMp4-debug-apk`. El archivo descargado contiene `app-debug.apk`.

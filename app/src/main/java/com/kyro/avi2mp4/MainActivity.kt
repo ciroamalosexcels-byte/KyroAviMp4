@@ -331,7 +331,11 @@ private fun AviConverterApp() {
                         )
                     )
             ) {
-                ConverterTopBar()
+                ConverterTopBar(
+                    onEditorClick = {
+                        context.startActivity(Intent(context, EditorActivity::class.java))
+                    }
+                )
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 30.dp),
@@ -415,7 +419,7 @@ private fun AviConverterApp() {
 }
 
 @Composable
-private fun ConverterTopBar() {
+private fun ConverterTopBar(onEditorClick: () -> Unit) {
     Surface(color = Color.White.copy(alpha = 0.96f), shadowElevation = 2.dp) {
         Row(
             modifier = Modifier
@@ -438,6 +442,9 @@ private fun ConverterTopBar() {
             Spacer(Modifier.width(10.dp))
             Text("LocalConvert", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = onEditorClick, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text("Editar", color = Primary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
             Surface(shape = RoundedCornerShape(50), color = Color(0xFFF7F5FF), border = BorderStroke(1.dp, Color(0xFFDCD7FF))) {
                 Text(
                     "FFmpeg · v${BuildConfig.VERSION_NAME}",

@@ -38,6 +38,8 @@ Los criterios, decisiones y resultados de esta fase se registran en `EDITOR_TECH
 - Persistir permisos SAF y ofrecer reconexion cuando un archivo se mueva o pierda acceso.
 - Modelo minimo: `Project`, `Asset`, `TimelineClip`, `MusicTrack` y comandos de historial.
 
+Estado: iniciada en la version 1.5 con un proyecto unico persistente, permisos SAF y clips no destructivos. La migracion a proyectos multiples y Room queda pendiente antes de incorporar historial complejo.
+
 ## Fase 2: proxies y recursos visuales
 
 - Detectar metadatos una vez con FFprobe y almacenarlos.
@@ -51,6 +53,8 @@ Los criterios, decisiones y resultados de esta fase se registran en `EDITOR_TECH
 - Permitir reordenar clips y segmentos con pulsacion prolongada y arrastre.
 - Agregar zoom de timeline, ajuste magnetico a bordes y respuesta haptica.
 - Representar cada cambio como comando reversible para deshacer y rehacer.
+
+Estado: primer corte disponible en la version 1.5 con timeline horizontal, seleccion, preview, recorte de entrada/salida y cambio de orden. Division, arrastre directo, zoom y deshacer/rehacer siguen pendientes.
 
 ## Fase 4: musica y color
 

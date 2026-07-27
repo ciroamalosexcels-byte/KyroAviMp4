@@ -5,6 +5,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Avi2Mp4">
         <activity
+            android:name=".EditorActivity"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
