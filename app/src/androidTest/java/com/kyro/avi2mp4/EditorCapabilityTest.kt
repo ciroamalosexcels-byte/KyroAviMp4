@@ -9,7 +9,6 @@ import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -73,7 +72,7 @@ class EditorCapabilityTest {
     }
 
     @Test
-    fun ffmpegCanUseAnAndroidAvcEncoder() {
+    fun inventoriesAndroidAvcEncodersForThePhysicalDeviceGate() {
         val avcEncoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { codec ->
             codec.isEncoder && codec.supportedTypes.any { it.equals("video/avc", ignoreCase = true) }
         }
@@ -87,27 +86,8 @@ class EditorCapabilityTest {
                 }
             }
         }
-        assumeTrue("Android no expone un encoder AVC:\n$report", avcEncoders.isNotEmpty())
-
-        val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
-        val output = File(cacheDir, "mediacodec-capability.mp4")
-        try {
-            assertFfmpegSuccess(
-                "-y", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10:duration=1",
-                "-an", "-c:v", "h264_mediacodec", "-b:v", "600k", "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart", output.absolutePath
-            )
-            val mediaInformation = ffprobeOutput(
-                "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name,width,height", "-of", "default=noprint_wrappers=1",
-                output.absolutePath
-            )
-            assertTrue("Encoders AVC:\n$report\n$mediaInformation", mediaInformation.contains("codec_name=h264"))
-            assertTrue(mediaInformation, mediaInformation.contains("width=160"))
-            assertTrue(mediaInformation, mediaInformation.contains("height=120"))
-        } finally {
-            output.delete()
-        }
+        println("Encoders AVC disponibles:\n$report")
+        assertTrue("Android no expone un encoder AVC:\n$report", avcEncoders.isNotEmpty())
     }
 
     private fun assertListed(listing: String, name: String) {

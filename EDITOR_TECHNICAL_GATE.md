@@ -31,7 +31,7 @@ La aplicacion debe conservar avisos, licencia, fuentes correspondientes y datos 
 - Decoders MJPEG, H.264, MP3 y PCM.
 - Un montaje real con dos clips recortados, audio concatenado, musica mezclada y correccion de color.
 - Salida MPEG-4/AAC valida, con duracion y dimensiones verificadas por FFprobe.
-- Codificacion H.264 a traves de un encoder AVC expuesto por Android.
+- Inventario de encoders AVC expuestos por Android para preparar la prueba en telefonos.
 
 Estado de CI: pendiente de la primera ejecucion de esta prueba.
 
@@ -46,6 +46,8 @@ El emulador confirma integracion, pero no representa el hardware de los celulare
 - Temperatura, tiempo de exportacion, cancelacion, seek y reproduccion del MP4 terminado.
 
 Hasta completar esa matriz, H.264 queda clasificado como experimental y MPEG-4 sigue siendo el camino estable.
+
+Una codificacion H.264 directa se intento inicialmente en el emulador, pero MediaCodec no completo la operacion dentro de un tiempo razonable. Por eso CI solo comprueba que la integracion y el encoder existen; la ejecucion H.264 se reserva para hardware fisico con timeout y cancelacion.
 
 ## Fuentes
 
