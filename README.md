@@ -22,11 +22,11 @@ El desarrollo futuro del editor se encuentra dividido por etapas en `ROADMAP.md`
 
 ## Editor móvil
 
-La version 1.6 incorpora un editor no destructivo separado. Desde `Editar` se pueden importar MP4, reproducir y recortar segmentos, dividir en la posicion actual, reordenar con pulsacion larga y arrastre, eliminar y recuperar cambios con deshacer y rehacer. El proyecto se guarda automaticamente en el dispositivo.
+La version 1.7 incorpora un editor no destructivo con disposicion movil: preview arriba, controles de reproduccion, timeline de video y musica con cabezal central, y una barra inferior con las herramientas `Editar`, `Audio`, `Ajustar` y `Exportar`. Se pueden importar MP4, recortar segmentos, dividir en el cabezal, reordenar con pulsacion larga y arrastre, eliminar y recuperar cambios con deshacer y rehacer.
 
 El editor admite una pista de musica MP3 con recorte, posicion, volumen y fundidos. Cada segmento puede ajustar blanco y negro, saturacion, exposicion, contraste, luces, sombras y tintes. `Exportar montaje MP4` compone todos los clips, audio, musica y filtros en un unico archivo MPEG-4/AAC; durante el proceso muestra progreso y permite cancelar.
 
-Los originales nunca se modifican. La version actual mantiene un proyecto unico y aplica los filtros de color al archivo exportado; proxies, preview de color en tiempo real y proyectos multiples siguen planificados.
+La preview final se genera automaticamente a resolucion reducida con el mismo grafo FFmpeg de la exportacion. Por eso permite reproducir antes de exportar la union completa, los recortes, los filtros y la mezcla musical que tendra el resultado. Los originales nunca se modifican. Proyectos multiples y una preview GPU instantanea siguen planificados.
 
 ## APK en GitHub Actions
 

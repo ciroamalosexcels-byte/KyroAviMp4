@@ -65,9 +65,18 @@ class EditorExportTest {
         assertTrue(graph, graph.contains("amix=inputs=2:duration=first"))
 
         val arguments = buildEditorExportArguments(plan, File("/cache/output.mp4")).toList()
+        val previewArguments = buildEditorExportArguments(
+            plan,
+            File("/cache/preview.mp4"),
+            videoQuality = 7,
+            audioBitrate = "96k"
+        ).toList()
         assertEquals(3, arguments.count { it == "-i" })
         assertEquals(2, arguments.count { it == "/cache/shared.mp4" })
         assertTrue(arguments.contains("[mixed_audio]"))
+        assertEquals(arguments[arguments.indexOf("-filter_complex") + 1], previewArguments[previewArguments.indexOf("-filter_complex") + 1])
+        assertEquals("7", previewArguments[previewArguments.indexOf("-q:v") + 1])
+        assertEquals("96k", previewArguments[previewArguments.indexOf("-b:a") + 1])
     }
 
     @Test

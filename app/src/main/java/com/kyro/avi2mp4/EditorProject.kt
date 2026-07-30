@@ -56,6 +56,42 @@ internal data class EditorProject(
         get() = clips.sumOf(EditorClip::trimmedDurationMs)
 }
 
+internal data class EditorTimelineLocation(
+    val clip: EditorClip,
+    val clipIndex: Int,
+    val clipTimelineStartMs: Long,
+    val sourcePositionMs: Long
+)
+
+internal fun EditorProject.locateTimelinePosition(positionMs: Long): EditorTimelineLocation? {
+    if (clips.isEmpty()) return null
+    val bounded = positionMs.coerceIn(0L, durationMs)
+    var timelineStart = 0L
+    clips.forEachIndexed { index, clip ->
+        val timelineEnd = timelineStart + clip.trimmedDurationMs
+        if (bounded < timelineEnd || index == clips.lastIndex) {
+            val localPosition = (bounded - timelineStart).coerceIn(0L, clip.trimmedDurationMs)
+            return EditorTimelineLocation(
+                clip = clip,
+                clipIndex = index,
+                clipTimelineStartMs = timelineStart,
+                sourcePositionMs = clip.trimStartMs + localPosition
+            )
+        }
+        timelineStart = timelineEnd
+    }
+    return null
+}
+
+internal fun EditorProject.timelineStartOf(clipId: String): Long? {
+    var timelineStart = 0L
+    clips.forEach { clip ->
+        if (clip.id == clipId) return timelineStart
+        timelineStart += clip.trimmedDurationMs
+    }
+    return null
+}
+
 internal data class EditorSnapshot(
     val project: EditorProject,
     val selectedClipId: String?

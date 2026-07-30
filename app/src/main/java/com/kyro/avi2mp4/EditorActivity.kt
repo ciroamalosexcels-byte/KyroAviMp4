@@ -23,6 +23,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,9 +62,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,21 +79,27 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -106,6 +116,16 @@ private val EditorMuted = Color(0xFFA5A7B0)
 private val EditorAccent = Color(0xFFE8B04B)
 private val EditorDanger = Color(0xFFE48A8F)
 private val MusicAccent = Color(0xFF67C6A3)
+private const val TIMELINE_DP_PER_SECOND = 32f
+
+private enum class EditorTool(val label: String, val symbol: String) {
+    CLIP("Editar", "✂"),
+    AUDIO("Audio", "♫"),
+    COLOR("Ajustar", "◐"),
+    EXPORT("Exportar", "↑")
+}
+
+private data class PreviewSeekRequest(val positionMs: Long, val id: Long = System.nanoTime())
 
 private val EditorColors = darkColorScheme(
     primary = EditorAccent,
@@ -140,6 +160,8 @@ private fun EditorApp(onClose: () -> Unit) {
     }
     var draft by remember { mutableStateOf<EditorSnapshot?>(null) }
     var previewPositionMs by remember { mutableStateOf(0L) }
+    var previewSeekRequest by remember { mutableStateOf<PreviewSeekRequest?>(null) }
+    var activeTool by remember { mutableStateOf(EditorTool.CLIP) }
     var lastInputLocation by remember {
         mutableStateOf(preferences.getString("input_location_uri", null)?.let(Uri::parse))
     }
@@ -152,16 +174,33 @@ private fun EditorApp(onClose: () -> Unit) {
     var exportMessage by remember { mutableStateOf<String?>(null) }
     var lastExportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingExportProject by remember { mutableStateOf<EditorProject?>(null) }
+    val previewRenderer = remember { EditorPreviewRenderer(context) }
+    var renderedPreview by remember { mutableStateOf<File?>(null) }
+    var renderedProject by remember { mutableStateOf<EditorProject?>(null) }
+    var previewRendering by remember { mutableStateOf(false) }
+    var previewProgress by remember { mutableStateOf<EditorExportProgress?>(null) }
+    var previewError by remember { mutableStateOf<String?>(null) }
+    var previewRefresh by remember { mutableStateOf(0) }
+    var renderedRefresh by remember { mutableIntStateOf(-1) }
+    var previewGeneration by remember { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
     val visibleSnapshot = draft ?: history.present
     val project = visibleSnapshot.project
     val clips = project.clips
     val selectedClip = clips.firstOrNull { it.id == visibleSnapshot.selectedClipId }
     val selectedIndex = clips.indexOfFirst { it.id == visibleSnapshot.selectedClipId }
+    val playheadLocation = project.locateTimelinePosition(previewPositionMs)
+    val previewOutdated = draft != null || renderedProject != history.present.project
     val busy = importing || exportJob != null
 
     fun save(updatedHistory: EditorHistory) {
         projectStore.saveProject(updatedHistory.present.project)
+    }
+
+    fun seekPreview(positionMs: Long, durationMs: Long = project.durationMs) {
+        val bounded = positionMs.coerceIn(0L, durationMs)
+        previewPositionMs = bounded
+        previewSeekRequest = PreviewSeekRequest(bounded)
     }
 
     fun commitProject(nextProject: EditorProject, selectedId: String? = visibleSnapshot.selectedClipId) {
@@ -193,7 +232,7 @@ private fun EditorApp(onClose: () -> Unit) {
         if (draft != null) save(baseHistory)
         draft = null
         history = selected
-        previewPositionMs = selected.present.project.clips.firstOrNull { it.id == clipId }?.trimStartMs ?: 0L
+        seekPreview(selected.present.project.timelineStartOf(clipId) ?: 0L, selected.present.project.durationMs)
     }
 
     fun updateSelectedDraft(transform: (EditorClip) -> EditorClip) {
@@ -210,8 +249,10 @@ private fun EditorApp(onClose: () -> Unit) {
         val updated = baseHistory.undo()
         draft = null
         history = updated
-        previewPositionMs = updated.present.project.clips
-            .firstOrNull { it.id == updated.present.selectedClipId }?.trimStartMs ?: 0L
+        seekPreview(
+            updated.present.project.timelineStartOf(updated.present.selectedClipId.orEmpty()) ?: 0L,
+            updated.present.project.durationMs
+        )
         save(updated)
     }
 
@@ -220,8 +261,10 @@ private fun EditorApp(onClose: () -> Unit) {
         val updated = baseHistory.redo()
         draft = null
         history = updated
-        previewPositionMs = updated.present.project.clips
-            .firstOrNull { it.id == updated.present.selectedClipId }?.trimStartMs ?: 0L
+        seekPreview(
+            updated.present.project.timelineStartOf(updated.present.selectedClipId.orEmpty()) ?: 0L,
+            updated.present.project.durationMs
+        )
         save(updated)
     }
 
@@ -285,7 +328,9 @@ private fun EditorApp(onClose: () -> Unit) {
             pendingExportProject = null
             return@rememberLauncherForActivityResult
         }
-        val exportProject = pendingExportProject ?: return@rememberLauncherForActivityResult
+        val exportProject = pendingExportProject
+            ?: projectStore.loadProject().takeIf { it.clips.isNotEmpty() }
+            ?: return@rememberLauncherForActivityResult
         pendingExportProject = null
         exportMessage = null
         exportProgress = EditorExportProgress("Preparando exportación...", null)
@@ -310,11 +355,71 @@ private fun EditorApp(onClose: () -> Unit) {
         }
     }
 
+    LaunchedEffect(history.present.project, exportJob != null, previewRefresh) {
+        val previewProject = history.present.project
+        if (previewProject.clips.isEmpty()) {
+            renderedPreview = null
+            renderedProject = null
+            previewRendering = false
+            previewProgress = null
+            previewError = null
+            return@LaunchedEffect
+        }
+        if (exportJob != null || (
+                renderedProject == previewProject &&
+                    renderedPreview?.isFile == true &&
+                    renderedRefresh == previewRefresh
+                )
+        ) {
+            return@LaunchedEffect
+        }
+        delay(450)
+        val generation = previewGeneration + 1L
+        previewGeneration = generation
+        previewRendering = true
+        previewError = null
+        try {
+            when (val result = previewRenderer.render(previewProject) { progress ->
+                scope.launch {
+                    if (previewGeneration == generation) previewProgress = progress
+                }
+            }) {
+                is EditorPreviewResult.Success -> {
+                    if (previewGeneration == generation) {
+                        renderedPreview = result.file
+                        renderedProject = previewProject
+                        renderedRefresh = previewRefresh
+                        previewProgress = null
+                        seekPreview(previewPositionMs.coerceAtMost(previewProject.durationMs), previewProject.durationMs)
+                    }
+                }
+                is EditorPreviewResult.Failure -> {
+                    if (previewGeneration == generation) {
+                        previewProgress = null
+                        previewError = result.message
+                    }
+                }
+            }
+        } finally {
+            if (previewGeneration == generation) previewRendering = false
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             draft?.let { projectStore.saveProject(it.project) }
             exportJob?.cancel()
+            previewRenderer.close()
         }
+    }
+
+    val lifecycleOwner = context as? LifecycleOwner
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) previewRefresh++
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
     }
 
     MaterialTheme(colorScheme = EditorColors) {
@@ -340,118 +445,148 @@ private fun EditorApp(onClose: () -> Unit) {
                         onImport = { pickClips.launch(editorPickerIntent(lastInputLocation)) }
                     )
                 } else {
+                    EditorPreview(
+                        file = renderedPreview,
+                        rendering = previewRendering,
+                        outdated = previewOutdated,
+                        progress = previewProgress,
+                        error = previewError,
+                        seekRequest = previewSeekRequest,
+                        onPositionChange = { position ->
+                            previewPositionMs = position.coerceIn(0L, project.durationMs)
+                            val activeClipId = project.locateTimelinePosition(previewPositionMs)?.clip?.id
+                            if (draft == null && activeClipId != null && activeClipId != history.present.selectedClipId) {
+                                history = history.copy(present = history.present.copy(selectedClipId = activeClipId))
+                            }
+                        },
+                        onRetry = { previewRefresh++ }
+                    )
+                    PreviewTransport(
+                        positionMs = previewPositionMs,
+                        durationMs = project.durationMs,
+                        clipCount = project.clips.size,
+                        previewReady = renderedProject == history.present.project && renderedPreview?.isFile == true,
+                        rendering = previewRendering,
+                        onSeekStart = { seekPreview(0L) },
+                        onSeekEnd = { seekPreview(project.durationMs) }
+                    )
+                    TimelineSection(
+                        project = project,
+                        selectedClipId = visibleSnapshot.selectedClipId,
+                        playheadPositionMs = previewPositionMs,
+                        enabled = !busy,
+                        onSelect = {
+                            activeTool = EditorTool.CLIP
+                            selectClip(it.id)
+                        },
+                        onMove = { clipId, offset ->
+                            val from = project.clips.indexOfFirst { it.id == clipId }
+                            val to = (from + offset).coerceIn(0, project.clips.lastIndex)
+                            if (from >= 0 && to != from) {
+                                commitProject(project.copy(clips = moveEditorClip(project.clips, from, to)), clipId)
+                            }
+                        }
+                    )
+                    ToolDock(activeTool = activeTool, onSelect = { activeTool = it })
                     LazyColumn(
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 18.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        item {
-                            EditorPreview(selectedClip, onPositionChange = { clipId, position ->
-                                if (clipId == visibleSnapshot.selectedClipId) previewPositionMs = position
-                            })
-                        }
-                        item { ProjectSummary(project) }
-                        item {
-                            TimelineSection(
-                                project = project,
-                                selectedClipId = visibleSnapshot.selectedClipId,
-                                enabled = !busy,
-                                onSelect = { selectClip(it.id) },
-                                onMove = { clipId, offset ->
-                                    val from = project.clips.indexOfFirst { it.id == clipId }
-                                    val to = (from + offset).coerceIn(0, project.clips.lastIndex)
-                                    if (from >= 0 && to != from) {
-                                        commitProject(project.copy(clips = moveEditorClip(project.clips, from, to)), clipId)
+                        when (activeTool) {
+                            EditorTool.CLIP -> selectedClip?.let { clip ->
+                                item {
+                                    val splitSourcePosition = playheadLocation
+                                        ?.takeIf { it.clip.id == clip.id }
+                                        ?.sourcePositionMs
+                                    ClipEditSection(
+                                        clip = clip,
+                                        splitSourcePositionMs = splitSourcePosition,
+                                        canMoveEarlier = selectedIndex > 0,
+                                        canMoveLater = selectedIndex in 0 until clips.lastIndex,
+                                        enabled = !busy,
+                                        onTrimChange = { updated -> updateSelectedDraft { updated } },
+                                        onTrimFinished = ::commitDraft,
+                                        onSplit = {
+                                            val location = project.locateTimelinePosition(previewPositionMs)
+                                            val updated = splitEditorClip(
+                                                project,
+                                                location?.clip?.id.orEmpty(),
+                                                location?.sourcePositionMs ?: -1L,
+                                                UUID.randomUUID().toString()
+                                            )
+                                            if (updated == null || location == null) {
+                                                Toast.makeText(context, "Mové el cabezal lejos de los bordes para dividir", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                val right = updated.clips.getOrNull(location.clipIndex + 1)
+                                                commitProject(updated, right?.id)
+                                            }
+                                        },
+                                        onMoveEarlier = {
+                                            commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex - 1)), clip.id)
+                                        },
+                                        onMoveLater = {
+                                            commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex + 1)), clip.id)
+                                        },
+                                        onDelete = {
+                                            val updated = clips.toMutableList().apply { removeAt(selectedIndex) }
+                                            val nextSelection = updated.getOrNull(selectedIndex.coerceAtMost(updated.lastIndex))?.id
+                                            commitProject(project.copy(clips = updated), nextSelection)
+                                        }
+                                    )
+                                }
+                                item {
+                                    OutlinedButton(
+                                        onClick = { commitProject(EditorProject(), null) },
+                                        enabled = !busy,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        border = BorderStroke(1.dp, EditorLine),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Vaciar proyecto", color = EditorMuted)
                                     }
                                 }
-                            )
-                        }
-                        selectedClip?.let { clip ->
-                            item {
-                                ClipEditSection(
-                                    clip = clip,
-                                    previewPositionMs = previewPositionMs,
-                                    canMoveEarlier = selectedIndex > 0,
-                                    canMoveLater = selectedIndex in 0 until clips.lastIndex,
-                                    enabled = !busy,
-                                    onTrimChange = { updated -> updateSelectedDraft { updated } },
-                                    onTrimFinished = ::commitDraft,
-                                    onSplit = {
-                                        val updated = splitEditorClip(
-                                            project,
-                                            clip.id,
-                                            previewPositionMs,
-                                            UUID.randomUUID().toString()
-                                        )
-                                        if (updated == null) {
-                                            Toast.makeText(context, "Mové la reproducción lejos de los bordes para dividir", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            val right = updated.clips.getOrNull(selectedIndex + 1)
-                                            commitProject(updated, right?.id)
-                                        }
-                                    },
-                                    onMoveEarlier = {
-                                        commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex - 1)), clip.id)
-                                    },
-                                    onMoveLater = {
-                                        commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex + 1)), clip.id)
-                                    },
-                                    onDelete = {
-                                        val updated = clips.toMutableList().apply { removeAt(selectedIndex) }
-                                        val nextSelection = updated.getOrNull(selectedIndex.coerceAtMost(updated.lastIndex))?.id
-                                        commitProject(project.copy(clips = updated), nextSelection)
-                                    }
-                                )
                             }
-                            item {
-                                ColorSection(
-                                    color = clip.color,
+                            EditorTool.COLOR -> selectedClip?.let { clip ->
+                                item {
+                                    ColorSection(
+                                        color = clip.color,
+                                        enabled = !busy,
+                                        onChange = { color -> updateSelectedDraft { it.copy(color = color) } },
+                                        onChangeFinished = ::commitDraft,
+                                        onReset = { commitProject(project.replaceClip(clip.copy(color = EditorColorSettings())), clip.id) }
+                                    )
+                                }
+                            }
+                            EditorTool.AUDIO -> item {
+                                MusicSection(
+                                    music = project.music,
+                                    projectDurationMs = project.durationMs,
                                     enabled = !busy,
-                                    onChange = { color -> updateSelectedDraft { it.copy(color = color) } },
+                                    onPick = { pickMusic.launch(editorMusicPickerIntent(lastMusicLocation)) },
+                                    onChange = { music -> updateDraft { it.copy(music = music) } },
                                     onChangeFinished = ::commitDraft,
-                                    onReset = { commitProject(project.replaceClip(clip.copy(color = EditorColorSettings())), clip.id) }
+                                    onRemove = { commitProject(project.copy(music = null)) }
                                 )
                             }
-                        }
-                        item {
-                            MusicSection(
-                                music = project.music,
-                                projectDurationMs = project.durationMs,
-                                enabled = !busy,
-                                onPick = { pickMusic.launch(editorMusicPickerIntent(lastMusicLocation)) },
-                                onChange = { music -> updateDraft { it.copy(music = music) } },
-                                onChangeFinished = ::commitDraft,
-                                onRemove = { commitProject(project.copy(music = null)) }
-                            )
-                        }
-                        item {
-                            ExportSection(
-                                outputWidth = project.outputWidth,
-                                enabled = !importing,
-                                exporting = exportJob != null,
-                                progress = exportProgress,
-                                message = exportMessage,
-                                hasResult = lastExportUri != null,
-                                onWidthChange = { width -> updateDraft { it.copy(outputWidth = width) } },
-                                onWidthFinished = ::commitDraft,
-                                onExport = {
-                                    pendingExportProject = project
-                                    commitDraft()
-                                    createExport.launch(editorExportIntent())
-                                },
-                                onCancel = { exportJob?.cancel() },
-                                onOpen = { lastExportUri?.let(context::openExportedVideo) }
-                            )
-                        }
-                        item {
-                            OutlinedButton(
-                                onClick = { commitProject(EditorProject(), null) },
-                                enabled = !busy,
-                                modifier = Modifier.fillMaxWidth(),
-                                border = BorderStroke(1.dp, EditorLine),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Vaciar proyecto", color = EditorMuted)
+                            EditorTool.EXPORT -> item {
+                                ExportSection(
+                                    outputWidth = project.outputWidth,
+                                    enabled = !importing,
+                                    exporting = exportJob != null,
+                                    progress = exportProgress,
+                                    message = exportMessage,
+                                    hasResult = lastExportUri != null,
+                                    onWidthChange = { width -> updateDraft { it.copy(outputWidth = width) } },
+                                    onWidthFinished = ::commitDraft,
+                                    onExport = {
+                                        pendingExportProject = project
+                                        commitDraft()
+                                        createExport.launch(editorExportIntent())
+                                    },
+                                    onCancel = { exportJob?.cancel() },
+                                    onOpen = { lastExportUri?.let(context::openExportedVideo) }
+                                )
                             }
                         }
                         item { Spacer(Modifier.navigationBarsPadding().height(8.dp)) }
@@ -547,92 +682,185 @@ private fun EmptyEditor(importing: Boolean, onImport: () -> Unit) {
 }
 
 @Composable
-private fun EditorPreview(clip: EditorClip?, onPositionChange: (String, Long) -> Unit) {
+private fun EditorPreview(
+    file: File?,
+    rendering: Boolean,
+    outdated: Boolean,
+    progress: EditorExportProgress?,
+    error: String?,
+    seekRequest: PreviewSeekRequest?,
+    onPositionChange: (Long) -> Unit,
+    onRetry: () -> Unit
+) {
     var videoView by remember { mutableStateOf<VideoView?>(null) }
-    val uri = clip?.uri
+    val path = file?.absolutePath
+    val latestSeekRequest by rememberUpdatedState(seekRequest)
 
     DisposableEffect(Unit) {
         onDispose { videoView?.stopPlayback() }
     }
 
-    LaunchedEffect(clip?.id, clip?.trimStartMs, clip?.trimEndMs, videoView) {
+    LaunchedEffect(path, videoView, outdated) {
         val player = videoView ?: return@LaunchedEffect
-        val active = clip ?: return@LaunchedEffect
-        if (player.currentPosition.toLong() !in active.trimStartMs until active.trimEndMs) {
-            player.seekTo(active.trimStartMs.toInt())
-        }
-        while (true) {
+        while (path != null) {
             delay(100)
-            val position = player.currentPosition.toLong()
-            onPositionChange(active.id, position.coerceIn(active.trimStartMs, active.trimEndMs))
-            if (player.isPlaying && position >= active.trimEndMs) {
-                player.pause()
-                player.seekTo(active.trimStartMs.toInt())
-                onPositionChange(active.id, active.trimStartMs)
+            if (outdated) {
+                if (player.isPlaying) player.pause()
+            } else {
+                onPositionChange(player.currentPosition.toLong().coerceAtLeast(0L))
             }
         }
+    }
+
+    LaunchedEffect(seekRequest?.id, videoView, path) {
+        val request = seekRequest ?: return@LaunchedEffect
+        val player = videoView ?: return@LaunchedEffect
+        if (path != null && player.tag == path) player.seekTo(request.positionMs.toInt())
     }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = Color.Black,
-        shape = RoundedCornerShape(18.dp),
         border = BorderStroke(1.dp, EditorLine),
-        shadowElevation = 12.dp
+        shadowElevation = 8.dp
     ) {
-        if (clip == null) {
-            Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f), contentAlignment = Alignment.Center) {
-                Text("Seleccioná un clip", color = EditorMuted)
-            }
-        } else {
-            AndroidView(
-                factory = { context ->
-                    VideoView(context).apply {
-                        val controls = MediaController(context)
-                        controls.setAnchorView(this)
-                        setMediaController(controls)
-                        videoView = this
-                    }
-                },
-                update = { player ->
-                    if (player.tag != uri) {
-                        player.tag = uri
-                        player.setOnPreparedListener {
-                            player.seekTo(clip.trimStartMs.toInt())
-                            player.start()
+        Box(Modifier.fillMaxWidth().height(190.dp), contentAlignment = Alignment.Center) {
+            if (path != null) {
+                AndroidView(
+                    factory = { context ->
+                        VideoView(context).apply {
+                            val controls = MediaController(context)
+                            controls.setAnchorView(this)
+                            setMediaController(controls)
+                            videoView = this
                         }
-                        player.setVideoURI(Uri.parse(uri))
-                    } else if (player.currentPosition.toLong() !in clip.trimStartMs until clip.trimEndMs) {
-                        player.seekTo(clip.trimStartMs.toInt())
+                    },
+                    update = { player ->
+                        if (player.tag != path) {
+                            player.tag = path
+                            player.setOnPreparedListener {
+                                player.seekTo(latestSeekRequest?.positionMs?.toInt() ?: 0)
+                                player.pause()
+                            }
+                            player.setVideoPath(path)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("PREVIEW FINAL", color = EditorAccent, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.height(7.dp))
+                    Text(
+                        if (rendering) "Uniendo clips, color y música..." else "Preparando el montaje...",
+                        color = EditorMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+            if (rendering || outdated) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopStart).padding(9.dp),
+                    color = Color.Black.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(50)
+                ) {
+                    Text(
+                        if (rendering) "Actualizando preview final" else "Cambios pendientes",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = if (rendering) EditorAccent else EditorMuted,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            error?.let {
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(10.dp),
+                    color = Color(0xFF241A1D),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, EditorDanger.copy(alpha = 0.55f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(it, modifier = Modifier.weight(1f), color = EditorDanger, fontSize = 8.sp, maxLines = 2)
+                        TextButton(onClick = onRetry) { Text("Reintentar", color = EditorAccent, fontSize = 9.sp) }
                     }
-                },
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            )
+                }
+            }
+            if (rendering) {
+                LinearProgressIndicator(
+                    progress = progress?.fraction ?: 0f,
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
+                    color = EditorAccent,
+                    trackColor = EditorLine
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ProjectSummary(project: EditorProject) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column {
-            Text("LÍNEA DE TIEMPO", color = EditorAccent, fontSize = 10.sp, fontWeight = FontWeight.Black)
-            Text(
-                "${project.clips.size} segmento${if (project.clips.size == 1) "" else "s"}",
-                color = EditorText,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
+private fun PreviewTransport(
+    positionMs: Long,
+    durationMs: Long,
+    clipCount: Int,
+    previewReady: Boolean,
+    rendering: Boolean,
+    onSeekStart: () -> Unit,
+    onSeekEnd: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(42.dp).background(Color(0xFF0D0E11)).padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(onClick = onSeekStart, contentPadding = PaddingValues(horizontal = 5.dp)) {
+            Text("|◀", color = EditorMuted, fontSize = 11.sp)
         }
+        Text(
+            "${formatEditorTime(positionMs)} / ${formatEditorTime(durationMs)}",
+            color = EditorText,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
         Spacer(Modifier.weight(1f))
-        Surface(color = EditorSurfaceRaised, shape = RoundedCornerShape(50)) {
-            Text(
-                formatEditorTime(project.durationMs),
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                color = EditorText,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
+        Text(
+            when {
+                rendering -> "Generando..."
+                previewReady -> "FINAL · $clipCount clips"
+                else -> "$clipCount clips"
+            },
+            color = if (previewReady) MusicAccent else EditorMuted,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Black
+        )
+        TextButton(onClick = onSeekEnd, contentPadding = PaddingValues(horizontal = 5.dp)) {
+            Text("▶|", color = EditorMuted, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun ToolDock(activeTool: EditorTool, onSelect: (EditorTool) -> Unit) {
+    Surface(color = Color(0xFF141519), shadowElevation = 10.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            EditorTool.entries.forEach { tool ->
+                val selected = tool == activeTool
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxSize().clickable { onSelect(tool) }.padding(top = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(tool.symbol, color = if (selected) EditorAccent else EditorMuted, fontSize = 18.sp)
+                    Text(tool.label, color = if (selected) EditorText else EditorMuted, fontSize = 9.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                    Spacer(Modifier.height(5.dp))
+                    Box(Modifier.width(28.dp).height(2.dp).background(if (selected) EditorAccent else Color.Transparent))
+                }
+            }
         }
     }
 }
@@ -641,10 +869,38 @@ private fun ProjectSummary(project: EditorProject) {
 private fun TimelineSection(
     project: EditorProject,
     selectedClipId: String?,
+    playheadPositionMs: Long,
     enabled: Boolean,
     onSelect: (EditorClip) -> Unit,
     onMove: (String, Int) -> Unit
 ) {
+    val density = LocalDensity.current
+    val scrollState = rememberScrollState()
+    var viewportWidthPx by remember { mutableIntStateOf(0) }
+    val clipWidths = project.clips.map { clip ->
+        (clip.trimmedDurationMs / 1000f * TIMELINE_DP_PER_SECOND).dp
+    }
+    val location = project.locateTimelinePosition(playheadPositionMs)
+    val playheadOffsetPx = if (location == null) {
+        0f
+    } else {
+        with(density) {
+            val previous = clipWidths.take(location.clipIndex).sumOf { it.toPx().toDouble() }.toFloat()
+            val spacing = 8.dp.toPx() * location.clipIndex
+            val fraction = if (location.clip.trimmedDurationMs > 0L) {
+                ((location.sourcePositionMs - location.clip.trimStartMs).toFloat() / location.clip.trimmedDurationMs)
+                    .coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            previous + spacing + clipWidths[location.clipIndex].toPx() * fraction
+        }
+    }
+    LaunchedEffect(playheadOffsetPx, viewportWidthPx, scrollState.maxValue) {
+        if (viewportWidthPx > 0) {
+            scrollState.scrollTo(playheadOffsetPx.roundToInt().coerceIn(0, scrollState.maxValue))
+        }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = Color(0xFF0C0D10),
@@ -655,33 +911,44 @@ private fun TimelineSection(
             Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("VIDEO", color = EditorMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
-                Text("Mantené pulsado y arrastrá para ordenar", color = EditorMuted, fontSize = 8.sp)
+                Text(
+                    "${formatEditorTime(playheadPositionMs)} · mantené pulsado para ordenar",
+                    color = EditorMuted,
+                    fontSize = 8.sp
+                )
             }
             Spacer(Modifier.height(7.dp))
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(project.clips, key = { _, clip -> clip.id }) { index, clip ->
-                    TimelineClipCard(
-                        clip = clip,
-                        index = index,
-                        selected = clip.id == selectedClipId,
-                        enabled = enabled,
-                        onClick = { onSelect(clip) },
-                        onMoveBy = { offset -> onMove(clip.id, offset) }
-                    )
+            Box(modifier = Modifier.fillMaxWidth().onSizeChanged { viewportWidthPx = it.width }) {
+                Column {
+                    Row(
+                        modifier = Modifier.horizontalScroll(scrollState).padding(
+                            horizontal = with(density) { (viewportWidthPx / 2f).toDp() }
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        project.clips.forEachIndexed { index, clip ->
+                            TimelineClipCard(
+                                clip = clip,
+                                index = index,
+                                cardWidth = clipWidths[index],
+                                selected = clip.id == selectedClipId,
+                                enabled = enabled,
+                                onClick = { onSelect(clip) },
+                                onMoveBy = { offset -> onMove(clip.id, offset) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider(color = EditorLine)
+                    Spacer(Modifier.height(8.dp))
+                    Text("MÚSICA", modifier = Modifier.padding(horizontal = 12.dp), color = EditorMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(5.dp))
+                    MusicTimeline(project.music, project.durationMs)
                 }
-            }
-            Spacer(Modifier.height(10.dp))
-            HorizontalDivider(color = EditorLine)
-            Spacer(Modifier.height(8.dp))
-            Text("MÚSICA", modifier = Modifier.padding(horizontal = 12.dp), color = EditorMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(5.dp))
-            MusicTimeline(project.music, project.durationMs)
-            Spacer(Modifier.height(8.dp))
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Box(modifier = Modifier.width(2.dp).height(12.dp).background(EditorAccent))
+                Box(
+                    modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).width(2.dp).height(174.dp)
+                        .background(EditorAccent)
+                )
             }
         }
     }
@@ -691,6 +958,7 @@ private fun TimelineSection(
 private fun TimelineClipCard(
     clip: EditorClip,
     index: Int,
+    cardWidth: Dp,
     selected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -698,11 +966,11 @@ private fun TimelineClipCard(
 ) {
     var dragX by remember(clip.id) { mutableStateOf(0f) }
     var dragging by remember(clip.id) { mutableStateOf(false) }
-    val stepPx = with(LocalDensity.current) { 144.dp.toPx() }
+    val stepPx = with(LocalDensity.current) { (cardWidth + 8.dp).toPx() }
     Surface(
         modifier = Modifier
-            .width(136.dp)
-            .height(105.dp)
+            .width(cardWidth)
+            .height(92.dp)
             .zIndex(if (dragging) 2f else 0f)
             .graphicsLayer { translationX = dragX }
             .pointerInput(clip.id, enabled) {
@@ -833,7 +1101,7 @@ private fun MusicTimeline(music: EditorMusicTrack?, projectDurationMs: Long) {
 @Composable
 private fun ClipEditSection(
     clip: EditorClip,
-    previewPositionMs: Long,
+    splitSourcePositionMs: Long?,
     canMoveEarlier: Boolean,
     canMoveLater: Boolean,
     enabled: Boolean,
@@ -846,8 +1114,10 @@ private fun ClipEditSection(
 ) {
     val durationSeconds = (clip.durationMs / 1000f).coerceAtLeast(0.1f)
     val selectedRange = (clip.trimStartMs / 1000f)..(clip.trimEndMs / 1000f)
-    val canSplit = previewPositionMs - clip.trimStartMs >= MIN_EDITOR_SEGMENT_MS &&
-        clip.trimEndMs - previewPositionMs >= MIN_EDITOR_SEGMENT_MS
+    val splitPosition = splitSourcePositionMs ?: clip.trimStartMs
+    val canSplit = splitSourcePositionMs != null &&
+        splitPosition - clip.trimStartMs >= MIN_EDITOR_SEGMENT_MS &&
+        clip.trimEndMs - splitPosition >= MIN_EDITOR_SEGMENT_MS
     EditorPanel(title = "CLIP SELECCIONADO") {
         Text(clip.name, color = EditorText, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(14.dp))
@@ -877,7 +1147,7 @@ private fun ClipEditSection(
             colors = ButtonDefaults.buttonColors(containerColor = EditorAccent),
             shape = RoundedCornerShape(10.dp)
         ) {
-            Text("Dividir en ${formatEditorTime(previewPositionMs - clip.trimStartMs)}", fontWeight = FontWeight.Bold)
+            Text("Dividir en ${formatEditorTime((splitPosition - clip.trimStartMs).coerceAtLeast(0L))}", fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -934,7 +1204,7 @@ private fun ColorSection(
         Text("Tinte de luces", color = EditorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         EditorSlider("Tono", color.highlightHue, 0f..359f, enabled, valueText = "${color.highlightHue.roundToInt()}°", onChange = { onChange(color.copy(highlightHue = it)) }, onFinished = onChangeFinished)
         EditorSlider("Intensidad", color.highlightTint, 0f..1f, enabled, onChange = { onChange(color.copy(highlightTint = it)) }, onFinished = onChangeFinished)
-        Text("Los filtros se aplican al MP4 final.", color = EditorMuted, fontSize = 9.sp)
+        Text("Al soltar cada control, la preview final se actualiza con este mismo color.", color = EditorMuted, fontSize = 9.sp)
     }
 }
 

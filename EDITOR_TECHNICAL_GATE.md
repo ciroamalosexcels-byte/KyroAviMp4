@@ -22,6 +22,7 @@ La aplicacion debe conservar avisos, licencia, fuentes correspondientes y datos 
 3. MPEG-4 Part 2 con AAC continuara como respaldo determinista cuando MediaCodec no sea compatible.
 4. No se construira un puente manual entre FFmpeg y MediaCodec: el paquete actual ya incluye esa integracion.
 5. Media3 se evaluara para reproducir proxies y la linea de tiempo. No sera el exportador principal inicialmente porque no abre AVI y los controles avanzados de luces, sombras y tintes requeririan efectos GL propios.
+6. Desde la version 1.7, la preview final usa el mismo constructor `filter_complex` que la exportacion, con ancho maximo de 640 px y calidad temporal reducida. Asi se mantienen identicos cortes, orden, color y mezcla de audio sin codificar a resolucion final despues de cada ajuste.
 
 ## Mapeo de controles de imagen
 

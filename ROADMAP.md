@@ -56,6 +56,8 @@ Estado: proyecto unico persistente con permisos SAF, clips no destructivos, musi
 
 Estado: version 1.6 con timeline horizontal, miniaturas, seleccion, preview, recorte, division en la posicion de reproduccion, eliminacion, deshacer/rehacer y reordenamiento por pulsacion larga y arrastre. Zoom, ajuste magnetico y respuesta haptica siguen pendientes.
 
+La version 1.7 reorganiza la pantalla como un editor movil: preview fija, transporte, timeline de escala temporal comun con cabezal central y dock inferior contextual. El cabezal global se traduce al tiempo fuente de cada segmento para seleccionar y dividir con precision.
+
 ## Fase 4: musica y color
 
 - Importar un MP3, recortarlo, mover su inicio, cambiar volumen y aplicar fundidos.
@@ -63,7 +65,7 @@ Estado: version 1.6 con timeline horizontal, miniaturas, seleccion, preview, rec
 - Usar un modelo comun de parametros para que preview y exportacion coincidan.
 - Aplicar saturacion y blanco y negro con `hue`; exposicion con `exposure`; contraste, luces y sombras con `curves`; tintes con `colorbalance`.
 
-Estado: version 1.6 con una pista de audio persistente, recorte, posicion, volumen, fundidos y representacion debajo del video. Cada segmento guarda controles de color independientes. La preview de color en tiempo real y la forma de onda calculada desde el MP3 siguen pendientes.
+Estado: version 1.7 con una pista de audio persistente, recorte, posicion, volumen, fundidos y representacion debajo del video. Cada segmento guarda controles de color independientes. Una preview compuesta automatica muestra clips, color y musica antes de exportar usando el mismo grafo final. La preview GPU instantanea y la forma de onda calculada desde el MP3 siguen pendientes.
 
 ## Fase 5: exportacion conjunta
 

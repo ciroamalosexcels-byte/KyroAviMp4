@@ -116,7 +116,12 @@ internal class EditorExporter(private val context: Context) {
     }
 }
 
-internal fun buildEditorExportArguments(plan: EditorExportPlan, output: File): Array<String> = buildList {
+internal fun buildEditorExportArguments(
+    plan: EditorExportPlan,
+    output: File,
+    videoQuality: Int = 4,
+    audioBitrate: String = "128k"
+): Array<String> = buildList {
     addAll(listOf("-y", "-nostdin", "-hide_banner", "-loglevel", "warning"))
     plan.segments.forEach { segment ->
         addAll(
@@ -134,8 +139,8 @@ internal fun buildEditorExportArguments(plan: EditorExportPlan, output: File): A
             "-filter_complex", buildEditorFilterGraph(plan),
             "-map", "[editor_video]",
             "-map", if (plan.musicPath == null) "[editor_audio]" else "[mixed_audio]",
-            "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p", "-r", "30",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-c:v", "mpeg4", "-q:v", videoQuality.coerceIn(2, 12).toString(), "-pix_fmt", "yuv420p", "-r", "30",
+            "-c:a", "aac", "-b:a", audioBitrate, "-ar", "44100", "-ac", "2",
             "-t", seconds(plan.project.durationMs),
             "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024",
             "-movflags", "+faststart", output.absolutePath
@@ -240,9 +245,9 @@ internal fun editorColorFilters(color: EditorColorSettings): List<String> = buil
     }
 }
 
-private data class EditorSourceProbe(val width: Int?, val height: Int?, val hasAudio: Boolean)
+internal data class EditorSourceProbe(val width: Int?, val height: Int?, val hasAudio: Boolean)
 
-private fun probeEditorSource(file: File): EditorSourceProbe {
+internal fun probeEditorSource(file: File): EditorSourceProbe {
     val session = FFprobeKit.executeWithArguments(
         arrayOf(
             "-v", "error", "-show_entries",
@@ -285,7 +290,7 @@ private fun probeEditorSource(file: File): EditorSourceProbe {
     return EditorSourceProbe(width, height, hasAudio)
 }
 
-private data class EditorFfmpegExecution(
+internal data class EditorFfmpegExecution(
     val succeeded: Boolean,
     val output: String
 ) {
@@ -299,7 +304,7 @@ private data class EditorFfmpegExecution(
         .ifEmpty { "FFmpeg terminó sin detalles" }
 }
 
-private suspend fun runEditorFfmpeg(
+internal suspend fun runEditorFfmpeg(
     arguments: Array<String>,
     totalDurationMs: Long,
     onProgress: (Float) -> Unit
@@ -329,7 +334,7 @@ private suspend fun runEditorFfmpeg(
     if (!continuation.isActive) FFmpegKit.cancel(sessionId)
 }
 
-private suspend fun Context.copyUriToFile(uri: Uri, destination: File) {
+internal suspend fun Context.copyUriToFile(uri: Uri, destination: File) {
     contentResolver.openInputStream(uri)?.use { source ->
         destination.outputStream().use { target ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

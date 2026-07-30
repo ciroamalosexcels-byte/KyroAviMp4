@@ -125,6 +125,29 @@ class EditorProjectTest {
         assertEquals(splitProject, undone.redo().present.project)
     }
 
+    @Test
+    fun mapsGlobalPreviewPositionToClipSourceTime() {
+        val first = sampleClip("first")
+        val second = sampleClip("second").copy(trimStartMs = 2_000L, trimEndMs = 6_000L)
+        val project = EditorProject(listOf(first, second))
+
+        val firstLocation = requireNotNull(project.locateTimelinePosition(2_500L))
+        assertEquals("first", firstLocation.clip.id)
+        assertEquals(3_500L, firstLocation.sourcePositionMs)
+        assertEquals(0L, firstLocation.clipTimelineStartMs)
+
+        val secondLocation = requireNotNull(project.locateTimelinePosition(first.trimmedDurationMs + 1_000L))
+        assertEquals("second", secondLocation.clip.id)
+        assertEquals(3_000L, secondLocation.sourcePositionMs)
+        assertEquals(first.trimmedDurationMs, secondLocation.clipTimelineStartMs)
+        assertEquals(first.trimmedDurationMs, project.timelineStartOf("second"))
+
+        assertEquals(first.trimStartMs, requireNotNull(project.locateTimelinePosition(-500L)).sourcePositionMs)
+        assertEquals("second", requireNotNull(project.locateTimelinePosition(first.trimmedDurationMs)).clip.id)
+        assertEquals(second.trimEndMs, requireNotNull(project.locateTimelinePosition(Long.MAX_VALUE)).sourcePositionMs)
+        assertNull(EditorProject().locateTimelinePosition(0L))
+    }
+
     private fun sampleClip(id: String) = EditorClip(
         id = id,
         uri = "content://test/$id.mp4",
