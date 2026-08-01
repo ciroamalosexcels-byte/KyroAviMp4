@@ -16,6 +16,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    flavorDimensions += "channel"
+    productFlavors {
+        create("stable") {
+            dimension = "channel"
+        }
+        create("preview") {
+            dimension = "channel"
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            resValue("string", "app_name", "AVI a MP4 Preview")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -47,6 +60,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.compose.foundation:foundation")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.media3:media3-transformer:1.9.4")
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-min:8.1.7")
     implementation("com.arthenica:smart-exception-java:0.2.1")
     debugImplementation("androidx.compose.ui:ui-tooling")

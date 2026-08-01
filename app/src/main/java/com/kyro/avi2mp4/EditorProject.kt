@@ -156,6 +156,20 @@ internal fun splitEditorClip(
     return project.copy(clips = updated)
 }
 
+internal fun duplicateEditorClip(
+    project: EditorProject,
+    clipId: String,
+    duplicateId: String
+): EditorProject? {
+    val index = project.clips.indexOfFirst { it.id == clipId }
+    if (index < 0 || duplicateId.isBlank() || project.clips.any { it.id == duplicateId }) return null
+    return project.copy(
+        clips = project.clips.toMutableList().apply {
+            add(index + 1, this[index].copy(id = duplicateId))
+        }
+    )
+}
+
 internal class EditorProjectStore(
     context: Context,
     preferenceName: String = "editor_project"

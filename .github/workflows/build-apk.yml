@@ -2,17 +2,17 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, preview]
   pull_request:
-    branches: [main]
+    branches: [main, preview]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-debug-apk:
-    name: Build debug APK
+    name: Build and test APK
     runs-on: ubuntu-latest
 
     steps:
@@ -20,6 +20,24 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Select application channel
+        id: channel
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          if [[ "$TARGET_BRANCH" == "main" ]]; then
+            echo "variant=StableDebug" >> "$GITHUB_OUTPUT"
+            echo "apk=app/build/outputs/apk/stable/debug/app-stable-debug.apk" >> "$GITHUB_OUTPUT"
+            echo "file=KyroAviMp4.apk" >> "$GITHUB_OUTPUT"
+            echo "artifact=KyroAviMp4-stable-apk" >> "$GITHUB_OUTPUT"
+          else
+            echo "variant=PreviewDebug" >> "$GITHUB_OUTPUT"
+            echo "apk=app/build/outputs/apk/preview/debug/app-preview-debug.apk" >> "$GITHUB_OUTPUT"
+            echo "file=KyroAviMp4-preview.apk" >> "$GITHUB_OUTPUT"
+            echo "artifact=KyroAviMp4-preview-apk" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -34,32 +52,31 @@ jobs:
       - name: Install Android 35 build tools
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      # The repository intentionally does not require a checked-in Gradle wrapper.
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Assemble debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Assemble APK
+        run: gradle ":app:assemble${{ steps.channel.outputs.variant }}" --no-daemon
 
       - name: Enable KVM for the Android emulator
         run: sudo chmod 666 /dev/kvm
 
-      - name: Verify AVI conversion on Android
+      - name: Run Android tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           target: default
           arch: x86_64
           emulator-boot-timeout: 600
-          script: gradle :app:connectedDebugAndroidTest --no-daemon
+          script: gradle ":app:connected${{ steps.channel.outputs.variant }}AndroidTest" --no-daemon
 
       - name: Upload Android test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-test-reports
+          name: ${{ steps.channel.outputs.artifact }}-test-reports
           path: |
             app/build/reports/androidTests
             app/build/outputs/androidTest-results
@@ -67,33 +84,13 @@ jobs:
           retention-days: 7
 
       - name: Name APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk KyroAviMp4.apk
-
-      - name: Detect application changes
-        id: application_changes
         shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" != "push" || "${{ github.ref }}" != "refs/heads/main" ]]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "${{ github.event.before }}" "${{ github.sha }}" -- app/src/main app/build.gradle.kts; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish direct APK download
-        if: steps.application_changes.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: KyroAviMp4
-          prerelease: true
-          files: KyroAviMp4.apk
+        run: cp "${{ steps.channel.outputs.apk }}" "${{ steps.channel.outputs.file }}"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: KyroAviMp4-debug-apk
-          path: KyroAviMp4.apk
+          name: ${{ steps.channel.outputs.artifact }}
+          path: ${{ steps.channel.outputs.file }}
           if-no-files-found: error
           retention-days: 30

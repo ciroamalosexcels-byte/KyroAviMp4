@@ -3,6 +3,9 @@ package com.kyro.avi2mp4
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -16,6 +19,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +73,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -115,6 +121,7 @@ private data class VideoJob(
     val uri: Uri,
     val name: String,
     val sizeBytes: Long? = null,
+    val thumbnail: Bitmap? = null,
     val status: String = "En espera"
 )
 
@@ -252,6 +259,13 @@ private fun AviConverterApp() {
             }
             if (jobs.none { it.uri == uri }) {
                 jobs += VideoJob(uri, context.displayName(uri), context.fileSize(uri))
+                scope.launch {
+                    val thumbnail = context.videoThumbnail(uri)
+                    val index = jobs.indexOfFirst { it.uri == uri }
+                    if (index >= 0 && thumbnail != null) {
+                        jobs[index] = jobs[index].copy(thumbnail = thumbnail)
+                    }
+                }
             }
             if (activeUri == null && !previewLoading) loadPreview(uri)
         }
@@ -586,8 +600,15 @@ private fun QueueItem(job: VideoJob, active: Boolean, enabled: Boolean, onSelect
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(11.dp)
         ) {
-            Surface(modifier = Modifier.size(45.dp), shape = RoundedCornerShape(12.dp), color = Color(0xFF343540)) {
-                Box(contentAlignment = Alignment.Center) {
+            Surface(modifier = Modifier.size(52.dp), shape = RoundedCornerShape(10.dp), color = Color(0xFF343540)) {
+                job.thumbnail?.let { thumbnail ->
+                    Image(
+                        bitmap = thumbnail.asImageBitmap(),
+                        contentDescription = "Miniatura de ${job.name}",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } ?: Box(contentAlignment = Alignment.Center) {
                     Text("AVI", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
                 }
             }
@@ -1172,6 +1193,47 @@ private suspend fun Context.videoPreview(uri: Uri): VideoPreview? = withContext(
         null
     } finally {
         input.delete()
+    }
+}
+
+private suspend fun Context.videoThumbnail(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(this@videoThumbnail, uri)
+        retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let {
+            return@withContext it
+        }
+    } catch (_: Exception) {
+        // FFmpeg handles more legacy AVI variants than MediaMetadataRetriever.
+    } finally {
+        retriever.release()
+    }
+
+    val input = File(cacheDir, "thumbnail_source_${System.nanoTime()}.avi")
+    val output = File(cacheDir, "thumbnail_${System.nanoTime()}.jpg")
+    try {
+        contentResolver.openInputStream(uri)?.use { source ->
+            input.outputStream().use { target -> source.copyTo(target) }
+        } ?: return@withContext null
+        val result = runFfmpeg(
+            arrayOf(
+                "-y", "-hide_banner", "-loglevel", "warning",
+                "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+                "-i", input.absolutePath,
+                "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5",
+                output.absolutePath
+            )
+        )
+        if (result.succeeded && output.isFile && output.length() > 0L) {
+            BitmapFactory.decodeFile(output.absolutePath)
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    } finally {
+        input.delete()
+        output.delete()
     }
 }
 

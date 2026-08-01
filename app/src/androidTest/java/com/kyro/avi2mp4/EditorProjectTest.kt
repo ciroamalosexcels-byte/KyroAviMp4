@@ -148,6 +148,22 @@ class EditorProjectTest {
         assertNull(EditorProject().locateTimelinePosition(0L))
     }
 
+    @Test
+    fun duplicatesSameSourceAsIndependentTimelineClip() {
+        val original = sampleClip("original").copy(
+            color = EditorColorSettings(exposure = 0.4f)
+        )
+        val project = EditorProject(listOf(original))
+        val duplicated = requireNotNull(duplicateEditorClip(project, original.id, "duplicate"))
+
+        assertEquals(listOf("original", "duplicate"), duplicated.clips.map(EditorClip::id))
+        assertEquals(original.uri, duplicated.clips.last().uri)
+        assertEquals(original.trimStartMs, duplicated.clips.last().trimStartMs)
+        assertEquals(original.trimEndMs, duplicated.clips.last().trimEndMs)
+        assertEquals(original.color, duplicated.clips.last().color)
+        assertNull(duplicateEditorClip(duplicated, original.id, "duplicate"))
+    }
+
     private fun sampleClip(id: String) = EditorClip(
         id = id,
         uri = "content://test/$id.mp4",

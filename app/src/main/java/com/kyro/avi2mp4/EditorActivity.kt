@@ -10,9 +10,8 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
-import android.widget.MediaController
 import android.widget.Toast
-import android.widget.VideoView
+import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -23,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,9 +33,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -52,7 +54,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -61,12 +62,13 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -82,9 +84,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
@@ -99,7 +103,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -116,7 +119,7 @@ private val EditorMuted = Color(0xFFA5A7B0)
 private val EditorAccent = Color(0xFFE8B04B)
 private val EditorDanger = Color(0xFFE48A8F)
 private val MusicAccent = Color(0xFF67C6A3)
-private const val TIMELINE_DP_PER_SECOND = 32f
+private const val TIMELINE_DP_PER_SECOND = 64f
 
 private enum class EditorTool(val label: String, val symbol: String) {
     CLIP("Editar", "✂"),
@@ -124,8 +127,6 @@ private enum class EditorTool(val label: String, val symbol: String) {
     COLOR("Ajustar", "◐"),
     EXPORT("Exportar", "↑")
 }
-
-private data class PreviewSeekRequest(val positionMs: Long, val id: Long = System.nanoTime())
 
 private val EditorColors = darkColorScheme(
     primary = EditorAccent,
@@ -160,7 +161,6 @@ private fun EditorApp(onClose: () -> Unit) {
     }
     var draft by remember { mutableStateOf<EditorSnapshot?>(null) }
     var previewPositionMs by remember { mutableStateOf(0L) }
-    var previewSeekRequest by remember { mutableStateOf<PreviewSeekRequest?>(null) }
     var activeTool by remember { mutableStateOf(EditorTool.CLIP) }
     var lastInputLocation by remember {
         mutableStateOf(preferences.getString("input_location_uri", null)?.let(Uri::parse))
@@ -174,15 +174,10 @@ private fun EditorApp(onClose: () -> Unit) {
     var exportMessage by remember { mutableStateOf<String?>(null) }
     var lastExportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingExportProject by remember { mutableStateOf<EditorProject?>(null) }
-    val previewRenderer = remember { EditorPreviewRenderer(context) }
-    var renderedPreview by remember { mutableStateOf<File?>(null) }
-    var renderedProject by remember { mutableStateOf<EditorProject?>(null) }
-    var previewRendering by remember { mutableStateOf(false) }
-    var previewProgress by remember { mutableStateOf<EditorExportProgress?>(null) }
+    val realtimePlayer = remember { EditorRealtimePlayer(context) }
+    var previewReady by remember { mutableStateOf(false) }
+    var previewPlaying by remember { mutableStateOf(false) }
     var previewError by remember { mutableStateOf<String?>(null) }
-    var previewRefresh by remember { mutableStateOf(0) }
-    var renderedRefresh by remember { mutableIntStateOf(-1) }
-    var previewGeneration by remember { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
     val visibleSnapshot = draft ?: history.present
     val project = visibleSnapshot.project
@@ -190,7 +185,6 @@ private fun EditorApp(onClose: () -> Unit) {
     val selectedClip = clips.firstOrNull { it.id == visibleSnapshot.selectedClipId }
     val selectedIndex = clips.indexOfFirst { it.id == visibleSnapshot.selectedClipId }
     val playheadLocation = project.locateTimelinePosition(previewPositionMs)
-    val previewOutdated = draft != null || renderedProject != history.present.project
     val busy = importing || exportJob != null
 
     fun save(updatedHistory: EditorHistory) {
@@ -200,7 +194,7 @@ private fun EditorApp(onClose: () -> Unit) {
     fun seekPreview(positionMs: Long, durationMs: Long = project.durationMs) {
         val bounded = positionMs.coerceIn(0L, durationMs)
         previewPositionMs = bounded
-        previewSeekRequest = PreviewSeekRequest(bounded)
+        realtimePlayer.seekTo(bounded)
     }
 
     fun commitProject(nextProject: EditorProject, selectedId: String? = visibleSnapshot.selectedClipId) {
@@ -284,9 +278,7 @@ private fun EditorApp(onClose: () -> Unit) {
             val imported = mutableListOf<EditorClip>()
             uris.forEach { uri ->
                 context.persistReadPermission(uri)
-                if (project.clips.none { it.uri == uri.toString() } && imported.none { it.uri == uri.toString() }) {
-                    withContext(Dispatchers.IO) { context.editorClip(uri) }?.let(imported::add)
-                }
+                withContext(Dispatchers.IO) { context.editorClip(uri) }?.let(imported::add)
             }
             uris.firstOrNull()?.let { uri ->
                 lastInputLocation = context.editorInitialLocation(uri)
@@ -355,68 +347,50 @@ private fun EditorApp(onClose: () -> Unit) {
         }
     }
 
-    LaunchedEffect(history.present.project, exportJob != null, previewRefresh) {
-        val previewProject = history.present.project
-        if (previewProject.clips.isEmpty()) {
-            renderedPreview = null
-            renderedProject = null
-            previewRendering = false
-            previewProgress = null
-            previewError = null
-            return@LaunchedEffect
-        }
-        if (exportJob != null || (
-                renderedProject == previewProject &&
-                    renderedPreview?.isFile == true &&
-                    renderedRefresh == previewRefresh
-                )
-        ) {
-            return@LaunchedEffect
-        }
-        delay(450)
-        val generation = previewGeneration + 1L
-        previewGeneration = generation
-        previewRendering = true
+    SideEffect {
+        realtimePlayer.updateParameters(project)
+    }
+
+    LaunchedEffect(history.present.project) {
         previewError = null
-        try {
-            when (val result = previewRenderer.render(previewProject) { progress ->
-                scope.launch {
-                    if (previewGeneration == generation) previewProgress = progress
-                }
-            }) {
-                is EditorPreviewResult.Success -> {
-                    if (previewGeneration == generation) {
-                        renderedPreview = result.file
-                        renderedProject = previewProject
-                        renderedRefresh = previewRefresh
-                        previewProgress = null
-                        seekPreview(previewPositionMs.coerceAtMost(previewProject.durationMs), previewProject.durationMs)
-                    }
-                }
-                is EditorPreviewResult.Failure -> {
-                    if (previewGeneration == generation) {
-                        previewProgress = null
-                        previewError = result.message
-                    }
-                }
+        realtimePlayer.setProject(history.present.project, previewPositionMs)
+    }
+
+    LaunchedEffect(realtimePlayer, project.durationMs) {
+        while (true) {
+            delay(50)
+            val position = realtimePlayer.player.currentPosition.coerceIn(0L, project.durationMs)
+            previewPositionMs = position
+            val activeClipId = project.locateTimelinePosition(position)?.clip?.id
+            if (draft == null && activeClipId != null && activeClipId != history.present.selectedClipId) {
+                history = history.copy(present = history.present.copy(selectedClipId = activeClipId))
             }
-        } finally {
-            if (previewGeneration == generation) previewRendering = false
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(realtimePlayer) {
+        realtimePlayer.setListener(object : EditorRealtimePlayer.Listener {
+            override fun onStateChanged(ready: Boolean, playing: Boolean) {
+                previewReady = ready
+                previewPlaying = playing
+            }
+
+            override fun onError(message: String) {
+                previewReady = false
+                previewError = message
+            }
+        })
         onDispose {
-            draft?.let { projectStore.saveProject(it.project) }
             exportJob?.cancel()
-            previewRenderer.close()
+            realtimePlayer.setListener(null)
+            realtimePlayer.release()
         }
     }
 
     val lifecycleOwner = context as? LifecycleOwner
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) previewRefresh++
+            if (event == Lifecycle.Event.ON_STOP) realtimePlayer.player.pause()
         }
         lifecycleOwner?.lifecycle?.addObserver(observer)
         onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
@@ -446,29 +420,19 @@ private fun EditorApp(onClose: () -> Unit) {
                     )
                 } else {
                     EditorPreview(
-                        file = renderedPreview,
-                        rendering = previewRendering,
-                        outdated = previewOutdated,
-                        progress = previewProgress,
-                        error = previewError,
-                        seekRequest = previewSeekRequest,
-                        onPositionChange = { position ->
-                            previewPositionMs = position.coerceIn(0L, project.durationMs)
-                            val activeClipId = project.locateTimelinePosition(previewPositionMs)?.clip?.id
-                            if (draft == null && activeClipId != null && activeClipId != history.present.selectedClipId) {
-                                history = history.copy(present = history.present.copy(selectedClipId = activeClipId))
-                            }
-                        },
-                        onRetry = { previewRefresh++ }
+                        realtimePlayer = realtimePlayer,
+                        ready = previewReady,
+                        error = previewError
                     )
                     PreviewTransport(
                         positionMs = previewPositionMs,
                         durationMs = project.durationMs,
                         clipCount = project.clips.size,
-                        previewReady = renderedProject == history.present.project && renderedPreview?.isFile == true,
-                        rendering = previewRendering,
+                        previewReady = previewReady,
+                        playing = previewPlaying,
                         onSeekStart = { seekPreview(0L) },
-                        onSeekEnd = { seekPreview(project.durationMs) }
+                        onSeekEnd = { seekPreview(project.durationMs) },
+                        onTogglePlayback = realtimePlayer::togglePlayback
                     )
                     TimelineSection(
                         project = project,
@@ -485,7 +449,15 @@ private fun EditorApp(onClose: () -> Unit) {
                             if (from >= 0 && to != from) {
                                 commitProject(project.copy(clips = moveEditorClip(project.clips, from, to)), clipId)
                             }
-                        }
+                        },
+                        onClipTrimChange = { updated ->
+                            updateDraft { current -> current.replaceClip(updated) }
+                        },
+                        onClipTrimFinished = ::commitDraft,
+                        onMusicChange = { updated -> updateDraft { it.copy(music = updated) } },
+                        onMusicFinished = ::commitDraft,
+                        onSeek = { position -> seekPreview(position) },
+                        onScrubbingChanged = realtimePlayer::setScrubbing
                     )
                     ToolDock(activeTool = activeTool, onSelect = { activeTool = it })
                     LazyColumn(
@@ -502,11 +474,7 @@ private fun EditorApp(onClose: () -> Unit) {
                                     ClipEditSection(
                                         clip = clip,
                                         splitSourcePositionMs = splitSourcePosition,
-                                        canMoveEarlier = selectedIndex > 0,
-                                        canMoveLater = selectedIndex in 0 until clips.lastIndex,
                                         enabled = !busy,
-                                        onTrimChange = { updated -> updateSelectedDraft { updated } },
-                                        onTrimFinished = ::commitDraft,
                                         onSplit = {
                                             val location = project.locateTimelinePosition(previewPositionMs)
                                             val updated = splitEditorClip(
@@ -522,11 +490,10 @@ private fun EditorApp(onClose: () -> Unit) {
                                                 commitProject(updated, right?.id)
                                             }
                                         },
-                                        onMoveEarlier = {
-                                            commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex - 1)), clip.id)
-                                        },
-                                        onMoveLater = {
-                                            commitProject(project.copy(clips = moveEditorClip(clips, selectedIndex, selectedIndex + 1)), clip.id)
+                                        onDuplicate = {
+                                            val duplicateId = UUID.randomUUID().toString()
+                                            val updated = duplicateEditorClip(project, clip.id, duplicateId)
+                                            if (updated != null) commitProject(updated, duplicateId)
                                         },
                                         onDelete = {
                                             val updated = clips.toMutableList().apply { removeAt(selectedIndex) }
@@ -561,7 +528,6 @@ private fun EditorApp(onClose: () -> Unit) {
                             EditorTool.AUDIO -> item {
                                 MusicSection(
                                     music = project.music,
-                                    projectDurationMs = project.durationMs,
                                     enabled = !busy,
                                     onPick = { pickMusic.launch(editorMusicPickerIntent(lastMusicLocation)) },
                                     onChange = { music -> updateDraft { it.copy(music = music) } },
@@ -683,41 +649,10 @@ private fun EmptyEditor(importing: Boolean, onImport: () -> Unit) {
 
 @Composable
 private fun EditorPreview(
-    file: File?,
-    rendering: Boolean,
-    outdated: Boolean,
-    progress: EditorExportProgress?,
-    error: String?,
-    seekRequest: PreviewSeekRequest?,
-    onPositionChange: (Long) -> Unit,
-    onRetry: () -> Unit
+    realtimePlayer: EditorRealtimePlayer,
+    ready: Boolean,
+    error: String?
 ) {
-    var videoView by remember { mutableStateOf<VideoView?>(null) }
-    val path = file?.absolutePath
-    val latestSeekRequest by rememberUpdatedState(seekRequest)
-
-    DisposableEffect(Unit) {
-        onDispose { videoView?.stopPlayback() }
-    }
-
-    LaunchedEffect(path, videoView, outdated) {
-        val player = videoView ?: return@LaunchedEffect
-        while (path != null) {
-            delay(100)
-            if (outdated) {
-                if (player.isPlaying) player.pause()
-            } else {
-                onPositionChange(player.currentPosition.toLong().coerceAtLeast(0L))
-            }
-        }
-    }
-
-    LaunchedEffect(seekRequest?.id, videoView, path) {
-        val request = seekRequest ?: return@LaunchedEffect
-        val player = videoView ?: return@LaunchedEffect
-        if (path != null && player.tag == path) player.seekTo(request.positionMs.toInt())
-    }
-
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = Color.Black,
@@ -725,52 +660,17 @@ private fun EditorPreview(
         shadowElevation = 8.dp
     ) {
         Box(Modifier.fillMaxWidth().height(190.dp), contentAlignment = Alignment.Center) {
-            if (path != null) {
-                AndroidView(
-                    factory = { context ->
-                        VideoView(context).apply {
-                            val controls = MediaController(context)
-                            controls.setAnchorView(this)
-                            setMediaController(controls)
-                            videoView = this
-                        }
-                    },
-                    update = { player ->
-                        if (player.tag != path) {
-                            player.tag = path
-                            player.setOnPreparedListener {
-                                player.seekTo(latestSeekRequest?.positionMs?.toInt() ?: 0)
-                                player.pause()
-                            }
-                            player.setVideoPath(path)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
+            AndroidView(
+                factory = { context ->
+                    SurfaceView(context).also(realtimePlayer::setSurfaceView)
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            if (!ready && error == null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("PREVIEW FINAL", color = EditorAccent, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                    Text("PREVIEW EN TIEMPO REAL", color = EditorAccent, fontSize = 10.sp, fontWeight = FontWeight.Black)
                     Spacer(Modifier.height(7.dp))
-                    Text(
-                        if (rendering) "Uniendo clips, color y música..." else "Preparando el montaje...",
-                        color = EditorMuted,
-                        fontSize = 11.sp
-                    )
-                }
-            }
-            if (rendering || outdated) {
-                Surface(
-                    modifier = Modifier.align(Alignment.TopStart).padding(9.dp),
-                    color = Color.Black.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(50)
-                ) {
-                    Text(
-                        if (rendering) "Actualizando preview final" else "Cambios pendientes",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        color = if (rendering) EditorAccent else EditorMuted,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("Preparando clips y música...", color = EditorMuted, fontSize = 11.sp)
                 }
             }
             error?.let {
@@ -784,14 +684,12 @@ private fun EditorPreview(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(it, modifier = Modifier.weight(1f), color = EditorDanger, fontSize = 8.sp, maxLines = 2)
-                        TextButton(onClick = onRetry) { Text("Reintentar", color = EditorAccent, fontSize = 9.sp) }
+                        Text(it, modifier = Modifier.weight(1f), color = EditorDanger, fontSize = 9.sp, maxLines = 3)
                     }
                 }
             }
-            if (rendering) {
+            if (!ready && error == null) {
                 LinearProgressIndicator(
-                    progress = progress?.fraction ?: 0f,
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
                     color = EditorAccent,
                     trackColor = EditorLine
@@ -807,9 +705,10 @@ private fun PreviewTransport(
     durationMs: Long,
     clipCount: Int,
     previewReady: Boolean,
-    rendering: Boolean,
+    playing: Boolean,
     onSeekStart: () -> Unit,
-    onSeekEnd: () -> Unit
+    onSeekEnd: () -> Unit,
+    onTogglePlayback: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().height(42.dp).background(Color(0xFF0D0E11)).padding(horizontal = 10.dp),
@@ -825,12 +724,15 @@ private fun PreviewTransport(
             fontWeight = FontWeight.Bold
         )
         Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = onTogglePlayback,
+            enabled = previewReady,
+            contentPadding = PaddingValues(horizontal = 12.dp)
+        ) {
+            Text(if (playing) "Ⅱ" else "▶", color = if (previewReady) EditorText else EditorMuted, fontSize = 17.sp)
+        }
         Text(
-            when {
-                rendering -> "Generando..."
-                previewReady -> "FINAL · $clipCount clips"
-                else -> "$clipCount clips"
-            },
+            if (previewReady) "EN VIVO · $clipCount clips" else "$clipCount clips",
             color = if (previewReady) MusicAccent else EditorMuted,
             fontSize = 8.sp,
             fontWeight = FontWeight.Black
@@ -872,7 +774,13 @@ private fun TimelineSection(
     playheadPositionMs: Long,
     enabled: Boolean,
     onSelect: (EditorClip) -> Unit,
-    onMove: (String, Int) -> Unit
+    onMove: (String, Int) -> Unit,
+    onClipTrimChange: (EditorClip) -> Unit,
+    onClipTrimFinished: () -> Unit,
+    onMusicChange: (EditorMusicTrack) -> Unit,
+    onMusicFinished: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onScrubbingChanged: (Boolean) -> Unit
 ) {
     val density = LocalDensity.current
     val scrollState = rememberScrollState()
@@ -880,73 +788,76 @@ private fun TimelineSection(
     val clipWidths = project.clips.map { clip ->
         (clip.trimmedDurationMs / 1000f * TIMELINE_DP_PER_SECOND).dp
     }
-    val location = project.locateTimelinePosition(playheadPositionMs)
-    val playheadOffsetPx = if (location == null) {
-        0f
-    } else {
-        with(density) {
-            val previous = clipWidths.take(location.clipIndex).sumOf { it.toPx().toDouble() }.toFloat()
-            val spacing = 8.dp.toPx() * location.clipIndex
-            val fraction = if (location.clip.trimmedDurationMs > 0L) {
-                ((location.sourcePositionMs - location.clip.trimStartMs).toFloat() / location.clip.trimmedDurationMs)
-                    .coerceIn(0f, 1f)
-            } else {
-                0f
-            }
-            previous + spacing + clipWidths[location.clipIndex].toPx() * fraction
-        }
-    }
-    LaunchedEffect(playheadOffsetPx, viewportWidthPx, scrollState.maxValue) {
-        if (viewportWidthPx > 0) {
+    val timelineWidth = (project.durationMs / 1000f * TIMELINE_DP_PER_SECOND).dp
+    val pxPerMs = with(density) { TIMELINE_DP_PER_SECOND.dp.toPx() / 1000f }
+    val playheadOffsetPx = playheadPositionMs * pxPerMs
+
+    LaunchedEffect(playheadOffsetPx, viewportWidthPx, scrollState.maxValue, scrollState.isScrollInProgress) {
+        if (viewportWidthPx > 0 && !scrollState.isScrollInProgress) {
             scrollState.scrollTo(playheadOffsetPx.roundToInt().coerceIn(0, scrollState.maxValue))
         }
+    }
+    LaunchedEffect(scrollState, pxPerMs, project.durationMs) {
+        snapshotFlow { scrollState.isScrollInProgress to scrollState.value }
+            .collect { (scrolling, value) ->
+                onScrubbingChanged(scrolling)
+                if (scrolling && pxPerMs > 0f) {
+                    onSeek((value / pxPerMs).roundToLong().coerceIn(0L, project.durationMs))
+                }
+            }
     }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = Color(0xFF0C0D10),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, EditorLine)
     ) {
-        Column(modifier = Modifier.padding(vertical = 12.dp)) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
             Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("VIDEO", color = EditorMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${formatEditorTime(playheadPositionMs)} · mantené pulsado para ordenar",
+                    "${formatEditorTimePrecise(playheadPositionMs)} · arrastrá bordes para recortar",
                     color = EditorMuted,
                     fontSize = 8.sp
                 )
             }
             Spacer(Modifier.height(7.dp))
             Box(modifier = Modifier.fillMaxWidth().onSizeChanged { viewportWidthPx = it.width }) {
-                Column {
-                    Row(
-                        modifier = Modifier.horizontalScroll(scrollState).padding(
-                            horizontal = with(density) { (viewportWidthPx / 2f).toDp() }
-                        ),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        project.clips.forEachIndexed { index, clip ->
-                            TimelineClipCard(
-                                clip = clip,
-                                index = index,
-                                cardWidth = clipWidths[index],
-                                selected = clip.id == selectedClipId,
-                                enabled = enabled,
-                                onClick = { onSelect(clip) },
-                                onMoveBy = { offset -> onMove(clip.id, offset) }
-                            )
+                Row(modifier = Modifier.horizontalScroll(scrollState)) {
+                    val sidePadding = with(density) { (viewportWidthPx / 2f).toDp() }
+                    Spacer(Modifier.width(sidePadding))
+                    Column(modifier = Modifier.width(timelineWidth.coerceAtLeast(1.dp))) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            project.clips.forEachIndexed { index, clip ->
+                                TimelineClipCard(
+                                    clip = clip,
+                                    index = index,
+                                    cardWidth = clipWidths[index],
+                                    selected = clip.id == selectedClipId,
+                                    enabled = enabled,
+                                    onClick = { onSelect(clip) },
+                                    onMoveBy = { offset -> onMove(clip.id, offset) },
+                                    onTrimChange = onClipTrimChange,
+                                    onTrimFinished = onClipTrimFinished
+                                )
+                            }
                         }
+                        Spacer(Modifier.height(7.dp))
+                        HorizontalDivider(color = EditorLine)
+                        Spacer(Modifier.height(5.dp))
+                        MusicTimeline(
+                            music = project.music,
+                            projectDurationMs = project.durationMs,
+                            enabled = enabled,
+                            onChange = onMusicChange,
+                            onChangeFinished = onMusicFinished
+                        )
                     }
-                    Spacer(Modifier.height(10.dp))
-                    HorizontalDivider(color = EditorLine)
-                    Spacer(Modifier.height(8.dp))
-                    Text("MÚSICA", modifier = Modifier.padding(horizontal = 12.dp), color = EditorMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(5.dp))
-                    MusicTimeline(project.music, project.durationMs)
+                    Spacer(Modifier.width(sidePadding))
                 }
                 Box(
-                    modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).width(2.dp).height(174.dp)
+                    modifier = Modifier.align(Alignment.TopCenter).zIndex(4f).width(2.dp).height(144.dp)
                         .background(EditorAccent)
                 )
             }
@@ -962,55 +873,132 @@ private fun TimelineClipCard(
     selected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
-    onMoveBy: (Int) -> Unit
+    onMoveBy: (Int) -> Unit,
+    onTrimChange: (EditorClip) -> Unit,
+    onTrimFinished: () -> Unit
 ) {
     var dragX by remember(clip.id) { mutableStateOf(0f) }
     var dragging by remember(clip.id) { mutableStateOf(false) }
-    val stepPx = with(LocalDensity.current) { (cardWidth + 8.dp).toPx() }
-    Surface(
-        modifier = Modifier
-            .width(cardWidth)
-            .height(92.dp)
-            .zIndex(if (dragging) 2f else 0f)
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    val stepPx = with(density) { cardWidth.coerceAtLeast(72.dp).toPx() }
+    Box(
+        modifier = Modifier.width(cardWidth).height(92.dp).zIndex(if (dragging || selected) 2f else 0f)
             .graphicsLayer { translationX = dragX }
-            .pointerInput(clip.id, enabled) {
-                if (enabled) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { dragging = true },
-                        onDragCancel = { dragX = 0f; dragging = false },
-                        onDragEnd = {
-                            val offset = (dragX / stepPx).roundToInt()
-                            dragX = 0f
-                            dragging = false
-                            if (offset != 0) onMoveBy(offset)
-                        },
-                        onDrag = { change, amount ->
-                            change.consume()
-                            dragX += amount.x
-                        }
-                    )
-                }
-            }
-            .clickable(enabled = enabled, onClick = onClick),
-        color = if (selected) Color(0xFF33303A) else EditorSurface,
-        shape = RoundedCornerShape(11.dp),
-        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) EditorAccent else EditorLine),
-        shadowElevation = if (dragging) 12.dp else 0.dp
     ) {
-        Column {
-            TimelineThumbnail(clip, index)
-            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxSize()
+                .pointerInput(clip.id, enabled) {
+                    if (enabled) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                dragging = true
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDragCancel = { dragX = 0f; dragging = false },
+                            onDragEnd = {
+                                val offset = (dragX / stepPx).roundToInt()
+                                dragX = 0f
+                                dragging = false
+                                if (offset != 0) onMoveBy(offset)
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                dragX += amount.x
+                            }
+                        )
+                    }
+                }
+                .clickable(enabled = enabled, onClick = onClick),
+            color = if (selected) Color(0xFF33303A) else EditorSurface,
+            shape = RoundedCornerShape(4.dp),
+            border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) EditorAccent else EditorLine),
+            shadowElevation = if (dragging) 12.dp else 0.dp
+        ) {
+            Column {
+                TimelineThumbnail(clip, index)
                 Text(
-                    "${index + 1}. ${clip.name}",
+                    "${index + 1} · ${formatEditorTimePrecise(clip.trimmedDurationMs)}",
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
                     color = EditorText,
-                    fontSize = 9.sp,
+                    fontSize = 8.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(formatEditorTime(clip.trimmedDurationMs), color = EditorMuted, fontSize = 8.sp)
             }
         }
+        if (selected && enabled) {
+            ClipTrimHandle(
+                clip = clip,
+                startEdge = true,
+                modifier = Modifier.align(Alignment.CenterStart),
+                onChange = onTrimChange,
+                onFinished = onTrimFinished
+            )
+            ClipTrimHandle(
+                clip = clip,
+                startEdge = false,
+                modifier = Modifier.align(Alignment.CenterEnd),
+                onChange = onTrimChange,
+                onFinished = onTrimFinished
+            )
+        }
+    }
+}
+
+@Composable
+private fun ClipTrimHandle(
+    clip: EditorClip,
+    startEdge: Boolean,
+    modifier: Modifier,
+    onChange: (EditorClip) -> Unit,
+    onFinished: () -> Unit
+) {
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    Box(
+        modifier = modifier.fillMaxHeight().width(14.dp).zIndex(6f)
+            .background(EditorAccent.copy(alpha = 0.82f), RoundedCornerShape(3.dp))
+            .pointerInput(clip.id, startEdge) {
+                var baseline = clip
+                var accumulatedPx = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = {
+                        baseline = clip
+                        accumulatedPx = 0f
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        accumulatedPx += amount
+                        val deltaMs = with(density) {
+                            accumulatedPx.toDp().value / TIMELINE_DP_PER_SECOND * 1_000f
+                        }.roundToLong()
+                        val minimumDuration = minOf(MIN_EDITOR_SEGMENT_MS, baseline.trimmedDurationMs)
+                        val updated = if (startEdge) {
+                            baseline.copy(
+                                trimStartMs = (baseline.trimStartMs + deltaMs)
+                                    .coerceIn(0L, baseline.trimEndMs - minimumDuration)
+                            )
+                        } else {
+                            baseline.copy(
+                                trimEndMs = (baseline.trimEndMs + deltaMs)
+                                    .coerceIn(baseline.trimStartMs + minimumDuration, baseline.durationMs)
+                            )
+                        }
+                        onChange(updated)
+                    },
+                    onDragEnd = onFinished,
+                    onDragCancel = {
+                        onChange(baseline)
+                        onFinished()
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.width(2.dp).height(26.dp).background(Color(0xFF231700)))
     }
 }
 
@@ -1057,44 +1045,128 @@ private fun TimelineThumbnail(clip: EditorClip, index: Int) {
 }
 
 @Composable
-private fun MusicTimeline(music: EditorMusicTrack?, projectDurationMs: Long) {
+private fun MusicTimeline(
+    music: EditorMusicTrack?,
+    projectDurationMs: Long,
+    enabled: Boolean,
+    onChange: (EditorMusicTrack) -> Unit,
+    onChangeFinished: () -> Unit
+) {
     if (music == null) {
         Box(
-            modifier = Modifier.fillMaxWidth().height(34.dp).padding(horizontal = 12.dp)
+            modifier = Modifier.fillMaxWidth().height(38.dp)
                 .background(EditorSurface, RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.CenterStart
         ) {
-            Text("Sin pista MP3", modifier = Modifier.padding(horizontal = 10.dp), color = EditorMuted, fontSize = 9.sp)
+            Text("+ Agregar audio", modifier = Modifier.padding(horizontal = 10.dp), color = EditorMuted, fontSize = 9.sp)
         }
         return
     }
-    val duration = projectDurationMs.coerceAtLeast(1L)
-    val startFraction = (music.timelineStartMs.toFloat() / duration).coerceIn(0f, 0.92f)
-    val widthFraction = (music.trimmedDurationMs.toFloat() / duration).coerceIn(0.08f, 1f - startFraction)
-    Box(modifier = Modifier.fillMaxWidth().height(38.dp).padding(horizontal = 12.dp)) {
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    val start = (music.timelineStartMs / 1000f * TIMELINE_DP_PER_SECOND).dp
+    val visibleDuration = minOf(music.trimmedDurationMs, (projectDurationMs - music.timelineStartMs).coerceAtLeast(0L))
+    val width = (visibleDuration / 1000f * TIMELINE_DP_PER_SECOND).dp
+    Box(modifier = Modifier.fillMaxWidth().height(38.dp).background(EditorSurface, RoundedCornerShape(5.dp))) {
         Box(
-            modifier = Modifier.fillMaxSize().background(EditorSurface, RoundedCornerShape(8.dp))
-        )
-        Row(modifier = Modifier.fillMaxSize()) {
-            Spacer(Modifier.weight(startFraction.coerceAtLeast(0.001f)))
-            Box(
-                modifier = Modifier.weight(widthFraction).fillMaxSize()
-                    .background(MusicAccent.copy(alpha = 0.32f), RoundedCornerShape(8.dp))
-                    .drawBehind {
-                        val center = size.height / 2f
-                        repeat(24) { bar ->
-                            val x = size.width * bar / 23f
-                            val amplitude = size.height * (0.16f + (bar % 5) * 0.055f)
-                            drawLine(MusicAccent, start = androidx.compose.ui.geometry.Offset(x, center - amplitude), end = androidx.compose.ui.geometry.Offset(x, center + amplitude), strokeWidth = 1.dp.toPx())
-                        }
-                    },
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(music.name, modifier = Modifier.padding(horizontal = 8.dp), color = EditorText, fontSize = 8.sp, maxLines = 1)
-            }
-            val remaining = (1f - startFraction - widthFraction).coerceAtLeast(0.001f)
-            Spacer(Modifier.weight(remaining))
+            modifier = Modifier.offset(x = start).width(width).fillMaxHeight().zIndex(2f)
+                .background(MusicAccent.copy(alpha = 0.34f), RoundedCornerShape(5.dp))
+                .pointerInput(music.uri, enabled) {
+                    if (enabled) {
+                        var baseline = music
+                        var accumulatedPx = 0f
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                baseline = music
+                                accumulatedPx = 0f
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                accumulatedPx += amount.x
+                                val deltaMs = with(density) {
+                                    accumulatedPx.toDp().value / TIMELINE_DP_PER_SECOND * 1_000f
+                                }.roundToLong()
+                                onChange(
+                                    baseline.copy(
+                                        timelineStartMs = (baseline.timelineStartMs + deltaMs)
+                                            .coerceIn(0L, (projectDurationMs - MIN_EDITOR_SEGMENT_MS).coerceAtLeast(0L))
+                                    )
+                                )
+                            },
+                            onDragEnd = onChangeFinished,
+                            onDragCancel = { onChange(baseline); onChangeFinished() }
+                        )
+                    }
+                }
+                .drawBehind {
+                    val center = size.height / 2f
+                    repeat(24) { bar ->
+                        val x = size.width * bar / 23f
+                        val amplitude = size.height * (0.12f + (bar % 5) * 0.045f)
+                        drawLine(MusicAccent, androidx.compose.ui.geometry.Offset(x, center - amplitude), androidx.compose.ui.geometry.Offset(x, center + amplitude), 1.dp.toPx())
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(music.name, color = EditorText, fontSize = 8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            MusicTrimHandle(music, true, Modifier.align(Alignment.CenterStart), onChange, onChangeFinished)
+            MusicTrimHandle(music, false, Modifier.align(Alignment.CenterEnd), onChange, onChangeFinished)
         }
+    }
+}
+
+@Composable
+private fun MusicTrimHandle(
+    music: EditorMusicTrack,
+    startEdge: Boolean,
+    modifier: Modifier,
+    onChange: (EditorMusicTrack) -> Unit,
+    onFinished: () -> Unit
+) {
+    val density = LocalDensity.current
+    Box(
+        modifier = modifier.fillMaxHeight().width(14.dp).zIndex(5f)
+            .background(MusicAccent, RoundedCornerShape(4.dp))
+            .pointerInput(music.uri, startEdge) {
+                var baseline = music
+                var accumulatedPx = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { baseline = music; accumulatedPx = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        accumulatedPx += amount
+                        val deltaMs = with(density) {
+                            accumulatedPx.toDp().value / TIMELINE_DP_PER_SECOND * 1_000f
+                        }.roundToLong()
+                        val minimumDuration = minOf(MIN_EDITOR_SEGMENT_MS, baseline.trimmedDurationMs)
+                        val updated = if (startEdge) {
+                            val applied = deltaMs.coerceIn(
+                                maxOf(-baseline.trimStartMs, -baseline.timelineStartMs),
+                                baseline.trimmedDurationMs - minimumDuration
+                            )
+                            baseline.copy(
+                                trimStartMs = baseline.trimStartMs + applied,
+                                timelineStartMs = baseline.timelineStartMs + applied
+                            )
+                        } else {
+                            baseline.copy(
+                                trimEndMs = (baseline.trimEndMs + deltaMs)
+                                    .coerceIn(baseline.trimStartMs + minimumDuration, baseline.durationMs)
+                            )
+                        }
+                        onChange(updated.copy(
+                            fadeInMs = updated.fadeInMs.coerceAtMost(updated.trimmedDurationMs),
+                            fadeOutMs = updated.fadeOutMs.coerceAtMost(updated.trimmedDurationMs)
+                        ))
+                    },
+                    onDragEnd = onFinished,
+                    onDragCancel = { onChange(baseline); onFinished() }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.width(2.dp).height(18.dp).background(Color(0xFF123C30)))
     }
 }
 
@@ -1102,73 +1174,49 @@ private fun MusicTimeline(music: EditorMusicTrack?, projectDurationMs: Long) {
 private fun ClipEditSection(
     clip: EditorClip,
     splitSourcePositionMs: Long?,
-    canMoveEarlier: Boolean,
-    canMoveLater: Boolean,
     enabled: Boolean,
-    onTrimChange: (EditorClip) -> Unit,
-    onTrimFinished: () -> Unit,
     onSplit: () -> Unit,
-    onMoveEarlier: () -> Unit,
-    onMoveLater: () -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val durationSeconds = (clip.durationMs / 1000f).coerceAtLeast(0.1f)
-    val selectedRange = (clip.trimStartMs / 1000f)..(clip.trimEndMs / 1000f)
     val splitPosition = splitSourcePositionMs ?: clip.trimStartMs
     val canSplit = splitSourcePositionMs != null &&
         splitPosition - clip.trimStartMs >= MIN_EDITOR_SEGMENT_MS &&
         clip.trimEndMs - splitPosition >= MIN_EDITOR_SEGMENT_MS
     EditorPanel(title = "CLIP SELECCIONADO") {
         Text(clip.name, color = EditorText, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(14.dp))
-        Text("Recorte de entrada y salida", color = EditorMuted, fontSize = 10.sp)
-        RangeSlider(
-            value = selectedRange,
-            onValueChange = { range ->
-                val minimumGapMs = minOf(MIN_EDITOR_SEGMENT_MS, clip.durationMs)
-                val start = (range.start * 1000).roundToLong().coerceIn(0L, clip.durationMs - minimumGapMs)
-                val end = (range.endInclusive * 1000).roundToLong().coerceIn(start + minimumGapMs, clip.durationMs)
-                onTrimChange(clip.copy(trimStartMs = start, trimEndMs = end))
-            },
-            onValueChangeFinished = onTrimFinished,
-            enabled = enabled,
-            valueRange = 0f..durationSeconds
-        )
+        Spacer(Modifier.height(6.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
-            Text("Entrada ${formatEditorTime(clip.trimStartMs)}", color = EditorMuted, fontSize = 10.sp)
+            Text("Entrada ${formatEditorTimePrecise(clip.trimStartMs)}", color = EditorMuted, fontSize = 9.sp)
             Spacer(Modifier.weight(1f))
-            Text("Salida ${formatEditorTime(clip.trimEndMs)}", color = EditorMuted, fontSize = 10.sp)
+            Text("Salida ${formatEditorTimePrecise(clip.trimEndMs)}", color = EditorMuted, fontSize = 9.sp)
         }
-        Spacer(Modifier.height(13.dp))
-        Button(
-            onClick = onSplit,
-            enabled = enabled && canSplit,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = EditorAccent),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Text("Dividir en ${formatEditorTime((splitPosition - clip.trimStartMs).coerceAtLeast(0L))}", fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             OutlinedButton(
-                onClick = onMoveEarlier,
-                enabled = enabled && canMoveEarlier,
+                onClick = onSplit,
+                enabled = enabled && canSplit,
                 modifier = Modifier.weight(1f),
-                border = BorderStroke(1.dp, EditorLine),
+                border = BorderStroke(1.dp, EditorAccent),
                 shape = RoundedCornerShape(10.dp)
-            ) { Text("← Antes", fontSize = 11.sp) }
+            ) { Text("✂ Dividir", color = EditorAccent, fontSize = 10.sp) }
             OutlinedButton(
-                onClick = onMoveLater,
-                enabled = enabled && canMoveLater,
+                onClick = onDuplicate,
+                enabled = enabled,
                 modifier = Modifier.weight(1f),
                 border = BorderStroke(1.dp, EditorLine),
                 shape = RoundedCornerShape(10.dp)
-            ) { Text("Después →", fontSize = 11.sp) }
+            ) { Text("▣ Duplicar", fontSize = 10.sp) }
+            OutlinedButton(
+                onClick = onDelete,
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+                border = BorderStroke(1.dp, EditorDanger.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(10.dp)
+            ) { Text("Eliminar", color = EditorDanger, fontSize = 10.sp) }
         }
-        TextButton(onClick = onDelete, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-            Text("Quitar segmento", color = EditorDanger, fontSize = 11.sp)
-        }
+        Spacer(Modifier.height(6.dp))
+        Text("Arrastrá los bordes dorados del bloque para recortar. Mantené pulsado el centro para reordenar.", color = EditorMuted, fontSize = 9.sp)
     }
 }
 
@@ -1204,14 +1252,13 @@ private fun ColorSection(
         Text("Tinte de luces", color = EditorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         EditorSlider("Tono", color.highlightHue, 0f..359f, enabled, valueText = "${color.highlightHue.roundToInt()}°", onChange = { onChange(color.copy(highlightHue = it)) }, onFinished = onChangeFinished)
         EditorSlider("Intensidad", color.highlightTint, 0f..1f, enabled, onChange = { onChange(color.copy(highlightTint = it)) }, onFinished = onChangeFinished)
-        Text("Al soltar cada control, la preview final se actualiza con este mismo color.", color = EditorMuted, fontSize = 9.sp)
+        Text("El color se aplica por GPU mientras movés cada control.", color = EditorMuted, fontSize = 9.sp)
     }
 }
 
 @Composable
 private fun MusicSection(
     music: EditorMusicTrack?,
-    projectDurationMs: Long,
     enabled: Boolean,
     onPick: () -> Unit,
     onChange: (EditorMusicTrack) -> Unit,
@@ -1234,29 +1281,12 @@ private fun MusicSection(
                 TextButton(onClick = onPick, enabled = enabled) { Text("Cambiar", color = MusicAccent, fontSize = 10.sp) }
             }
             Spacer(Modifier.height(8.dp))
-            Text("Recorte del MP3", color = EditorMuted, fontSize = 10.sp)
-            RangeSlider(
-                value = (music.trimStartMs / 1000f)..(music.trimEndMs / 1000f),
-                onValueChange = { range ->
-                    val gap = minOf(MIN_EDITOR_SEGMENT_MS, music.durationMs)
-                    val start = (range.start * 1000).roundToLong().coerceIn(0L, music.durationMs - gap)
-                    val end = (range.endInclusive * 1000).roundToLong().coerceIn(start + gap, music.durationMs)
-                    onChange(music.copy(trimStartMs = start, trimEndMs = end))
-                },
-                onValueChangeFinished = onChangeFinished,
-                enabled = enabled,
-                valueRange = 0f..(music.durationMs / 1000f).coerceAtLeast(0.1f)
+            Text(
+                "Recortá con las manijas verdes y mantené pulsado el bloque para moverlo en la timeline.",
+                color = EditorMuted,
+                fontSize = 9.sp
             )
-            val maxStartSeconds = (projectDurationMs / 1000f).coerceAtLeast(0.1f)
-            EditorSlider(
-                "Inicio en la historia",
-                music.timelineStartMs.coerceAtMost(projectDurationMs) / 1000f,
-                0f..maxStartSeconds,
-                enabled,
-                valueText = formatEditorTime(music.timelineStartMs),
-                onChange = { onChange(music.copy(timelineStartMs = (it * 1000).roundToLong())) },
-                onFinished = onChangeFinished
-            )
+            Spacer(Modifier.height(8.dp))
             EditorSlider("Volumen", music.volume, 0f..1f, enabled, valueText = "${(music.volume * 100).roundToInt()}%", onChange = { onChange(music.copy(volume = it)) }, onFinished = onChangeFinished)
             val maxFadeSeconds = (music.trimmedDurationMs / 1000f).coerceAtLeast(0.1f)
             EditorSlider("Fundido de entrada", music.fadeInMs / 1000f, 0f..maxFadeSeconds, enabled, valueText = formatEditorTime(music.fadeInMs), onChange = { onChange(music.copy(fadeInMs = (it * 1000).roundToLong())) }, onFinished = onChangeFinished)
@@ -1479,4 +1509,13 @@ private fun formatEditorTime(milliseconds: Long): String {
     } else {
         "%02d:%02d".format(minutes, seconds)
     }
+}
+
+private fun formatEditorTimePrecise(milliseconds: Long): String {
+    val bounded = milliseconds.coerceAtLeast(0L)
+    val totalSeconds = bounded / 1000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    val millis = bounded % 1000L
+    return "%02d:%02d.%03d".format(minutes, seconds, millis)
 }
