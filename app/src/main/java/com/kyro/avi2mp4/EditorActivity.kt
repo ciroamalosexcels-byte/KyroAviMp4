@@ -1073,7 +1073,7 @@ private fun MusicTimeline(
                 .background(MusicAccent.copy(alpha = 0.34f), RoundedCornerShape(5.dp))
                 .pointerInput(music.uri, enabled) {
                     if (enabled) {
-                        var baseline = music
+                        var baseline: EditorMusicTrack = music
                         var accumulatedPx = 0f
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
