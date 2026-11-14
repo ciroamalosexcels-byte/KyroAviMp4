@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
@@ -28,10 +29,16 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFprobeKit
+import com.arthenica.ffmpegkit.ReturnCode
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 
 /**
  * KyroAviMp4: la interfaz web (carpeta web/) dentro de una app Android.
@@ -44,6 +51,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
     private lateinit var chrome: KyroChrome
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+
+    // archivos elegidos: "nombre|tamaño" -> uri, para que FFmpeg nativo los pueda leer
+    private val picked = ConcurrentHashMap<String, Uri>()
+    private val work by lazy { File(cacheDir, "kyro").apply { mkdirs() } }
+    private val srcDir by lazy { File(cacheDir, "kyro-src").apply { mkdirs() } }
+    private val jobs = Executors.newSingleThreadExecutor()
+    @Volatile private var cancelled = false
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = fileCallback ?: return@registerForActivityResult
@@ -58,6 +72,7 @@ class MainActivity : ComponentActivity() {
                 data.data?.let { uris.add(it) }
             }
         }
+        remember(uris)
         callback.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
     }
 
@@ -71,6 +86,7 @@ class MainActivity : ComponentActivity() {
 
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/kyro/", WebViewAssetLoader.InternalStoragePathHandler(this, work))
             .build()
 
         web.setBackgroundColor(Color.parseColor("#2B6B58"))
@@ -122,6 +138,79 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         web.destroy()
         super.onDestroy()
+    }
+
+    private fun remember(uris: List<Uri>) {
+        for (u in uris) runCatching {
+            contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) picked["${c.getString(0)}|${c.getLong(1)}"] = u
+            }
+        }
+    }
+
+    private fun srcFile(key: String) = File(srcDir, Integer.toHexString(key.hashCode()) + "-" + key.length + ".src")
+
+    private fun emit(type: String, job: String, data: String) = runOnUiThread {
+        web.evaluateJavascript("window.kyroNative && window.kyroNative(${JSONObject.quote(type)},${JSONObject.quote(job)},${JSONObject.quote(data)})", null)
+    }
+
+    /** Copia el original una sola vez, lo analiza y genera la vista previa o el MP4 final. */
+    private fun runJob(job: String, key: String, mode: String, vf: String) {
+        cancelled = false
+        try {
+            val src = srcFile(key)
+            if (!src.exists() || src.length() == 0L) {
+                val uri = picked[key] ?: throw IllegalStateException("archivo no disponible")
+                val tmp = File(srcDir, src.name + ".part")
+                contentResolver.openInputStream(uri)?.use { input -> tmp.outputStream().use { input.copyTo(it, 1 shl 16) } }
+                    ?: throw IllegalStateException("no se pudo leer")
+                tmp.renameTo(src)
+            }
+            trimCache(src)
+            val info = FFprobeKit.getMediaInformation(src.absolutePath)?.mediaInformation
+            val dur = info?.duration?.toDoubleOrNull() ?: 0.0
+            val video = info?.streams?.firstOrNull { it.type == "video" }
+            emit("info", job, JSONObject().put("dur", dur).put("w", video?.width ?: 0L).put("h", video?.height ?: 0L).toString())
+            val out = File(work, "$job.mp4")
+            val proxy = mode == "proxy"
+            val filter = if (proxy) "scale='min(640,iw)':-2,setsar=1" else vf.ifBlank { "scale=trunc(iw/2)*2:-2,setsar=1" }
+            fun args(audio: Boolean): Array<String> = buildList {
+                addAll(listOf("-y", "-hide_banner", "-loglevel", "warning", "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+                    "-i", src.absolutePath, "-map", "0:v:0", "-vf", filter, "-c:v", "mpeg4", "-q:v", if (proxy) "6" else "3", "-pix_fmt", "yuv420p"))
+                if (audio) addAll(listOf("-map", "0:a:0?", "-c:a", "aac", "-b:a", if (proxy) "96k" else "128k", "-ar", "44100")) else add("-an")
+                addAll(listOf("-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024", "-movflags", "+faststart", out.absolutePath))
+            }.toTypedArray()
+            var ok = ffmpeg(args(true), dur, job)
+            if (!ok && !cancelled) ok = ffmpeg(args(false), dur, job)
+            if (ok && out.length() > 0) emit("done", job, "/kyro/$job.mp4")
+            else { out.delete(); emit("error", job, if (cancelled) "cancelado" else "no se pudo procesar") }
+        } catch (e: Exception) {
+            emit("error", job, e.message ?: "error")
+        }
+    }
+
+    private fun ffmpeg(args: Array<String>, dur: Double, job: String): Boolean {
+        val latch = CountDownLatch(1)
+        var ok = false
+        var last = -1
+        FFmpegKit.executeWithArgumentsAsync(args, { session ->
+            ok = ReturnCode.isSuccess(session.returnCode)
+            latch.countDown()
+        }, null, { stats ->
+            if (dur > 0) {
+                val pct = ((stats.time.toDouble() / 1000.0 / dur) * 100).toInt().coerceIn(0, 100)
+                if (pct != last) { last = pct; emit("progress", job, (pct / 100.0).toString()) }
+            }
+        })
+        latch.await()
+        return ok
+    }
+
+    /** Guarda como máximo ~2 GB de originales copiados. */
+    private fun trimCache(keep: File) {
+        val files = srcDir.listFiles()?.filter { it.isFile && it != keep }?.sortedBy { it.lastModified() } ?: return
+        var total = files.sumOf { it.length() } + keep.length()
+        for (f in files) { if (total < 2_000_000_000L) break; total -= f.length(); f.delete() }
     }
 
     /** Selector de archivos del sistema (varios a la vez) y pantalla completa del video. */
@@ -180,6 +269,22 @@ class MainActivity : ComponentActivity() {
     /** Guardar MP4 exportados o convertidos en Descargas/KyroAviMp4, por partes. */
     private inner class Bridge {
         private val streams = ConcurrentHashMap<String, Pair<OutputStream, Uri?>>()
+
+        @JavascriptInterface
+        fun canProcess(key: String): Boolean = picked.containsKey(key) || srcFile(key).exists()
+
+        @JavascriptInterface
+        fun process(job: String, key: String, mode: String, vf: String): Boolean {
+            if (!canProcess(key)) return false
+            jobs.execute { runJob(job, key, mode, vf) }
+            return true
+        }
+
+        @JavascriptInterface
+        fun release(job: String) { File(work, "$job.mp4").delete() }
+
+        @JavascriptInterface
+        fun cancel() { cancelled = true; FFmpegKit.cancel() }
 
         @JavascriptInterface
         fun saveBegin(name: String, mime: String): String {

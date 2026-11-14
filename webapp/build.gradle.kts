@@ -41,6 +41,10 @@ android {
     // La interfaz es la misma carpeta web/ que se publica en GitHub Pages.
     sourceSets["main"].assets.srcDirs("../web")
 
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -54,4 +58,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.1")
     implementation("androidx.webkit:webkit:1.11.0")
+    // FFmpeg nativo: lee AVI, arma la vista previa completa y convierte rápido en el celular
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-min:8.1.7")
+    implementation("com.arthenica:smart-exception-java:0.2.1")
 }
