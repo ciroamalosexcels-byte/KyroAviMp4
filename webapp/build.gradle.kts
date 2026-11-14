@@ -61,4 +61,8 @@ dependencies {
     // FFmpeg nativo: lee AVI, arma la vista previa completa y convierte rápido en el celular
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-min:8.1.7")
     implementation("com.arthenica:smart-exception-java:0.2.1")
+    // Android pasa el video a H.264 con su propio codificador (el que el WebView sí muestra)
+    implementation("androidx.media3:media3-transformer:1.4.1")
+    implementation("androidx.media3:media3-effect:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
 }

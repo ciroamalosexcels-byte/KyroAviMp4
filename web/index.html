@@ -324,6 +324,8 @@ html,body{background:var(--stage)}
 .tx-input:focus{box-shadow:inset 2px 3px 0 rgba(22,19,15,.25),0 0 0 3px var(--hl)}
 .pick-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .pick-grid .card .nm{color:#16130f}
+.pick-grid .card .sel{z-index:2;position:absolute;right:9px;top:9px}
+.pick-grid .card.picked .sel{background:#16130f;color:var(--hl)}
 .sheet .seg.ico-only button{padding:.5rem}
 
 /* hoja inferior (color, música, formato, exportar) */

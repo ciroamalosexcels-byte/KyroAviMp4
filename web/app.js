@@ -291,7 +291,7 @@ function renderModal() {
   } else {
     $('mCtrl').hidden = true;
     const err = it.status === 'error';
-    stage.innerHTML = `<div class="m-msg">${icon('film')}<span>${err ? 'No se pudo leer este video' : `Preparando vista previa ${Math.round((it.progress || 0) * 100)} %`}</span>
+    stage.innerHTML = `<div class="m-msg">${icon('film')}<span>${err ? esc(it.err || 'No se pudo leer este video') : `Preparando vista previa ${Math.round((it.progress || 0) * 100)} %`}</span>
       ${err ? `<button class="round" id="mRetry" title="Reintentar">${icon('reset')}</button>` : `<span class="track m-track"><i style="width:${(it.progress || 0) * 100}%"></i></span>`}</div>`;
     const b = $('mRetry'); if (b) b.onclick = () => { it.status = 'idle'; queuePreview(it); renderModal(); };
   }
@@ -394,7 +394,8 @@ window.kyroNative = (type, job, data) => {
     fetch(data).then(r => { if (!r.ok) throw new Error('lectura'); return r.blob(); })
       .then(b => { try { window.KyroAndroid.release(job); } catch (_) {} j.resolve({ blob: new Blob([b], { type: 'video/mp4' }), info: j.info }); })
       .catch(j.reject);
-  } else if (type === 'error') { nativeJobs.delete(job); j.reject(new Error(data || 'error')); }
+  } else if (type === 'log') { j.log = data; console.warn('nativo', data); }
+  else if (type === 'error') { nativeJobs.delete(job); j.reject(new Error(data + (j.log ? ' · ' + j.log : ''))); }
 };
 function nativeRun(it, mode, vf, onProgress) {
   return new Promise((resolve, reject) => {
@@ -467,7 +468,8 @@ async function pumpPreview() {
       const p = await probe(blob);
       if (p.ok) { it.thumb = p.thumb; it.outDur = p.dur; it.dur = (info && info.dur) || p.dur; it.w = (info && info.w) || it.w || p.w; it.h = (info && info.h) || it.h || p.h; }
       it.status = 'idle';
-    } catch (e) { console.warn(e); it.status = 'error'; it.err = 'No se pudo leer'; }
+      if (!p.ok) throw new Error('la vista previa no se puede reproducir');
+    } catch (e) { console.warn(e); it.proxy = null; it.status = 'error'; it.err = e.message || 'No se pudo leer'; toast('Vista previa: ' + it.err); }
     persistItem(it); renderGrid(); renderOut(); if (modalId === it.id) renderModal();
   }
   previewRunning = false;
@@ -1448,13 +1450,15 @@ new ResizeObserver(() => placeWorld()).observe(tv);
 
 /* ================= hojas inferiores ================= */
 let sheetKind = null;
+let sheetGuard = 0; // el toque "fantasma" que sigue a un dedo no cierra la hoja recién abierta
 function openSheet(kind, html) {
+  sheetGuard = performance.now() + 500;
   sheetKind = kind; $('sheetBody').innerHTML = html; paintIcons($('sheetBody'));
   $('sheet').classList.add('show'); $('sheetOv').classList.add('show');
 }
 function closeSheet() { sheetKind = null; $('sheet').classList.remove('show'); $('sheetOv').classList.remove('show'); }
 function reopenSheet() { ({ color: openColor, fade: openFade, sound: openSound, text: openText })[sheetKind]?.(); }
-$('sheetOv').onclick = closeSheet;
+$('sheetOv').onclick = () => { if (performance.now() > sheetGuard) closeSheet(); };
 const head = (t, extra = '') => `<div class="sh-head"><b>${t}</b>${extra}<button class="round" data-close data-ico="x" title="Cerrar"></button></div>`;
 $('sheet').addEventListener('click', e => { if (e.target.closest('[data-close]')) closeSheet(); });
 const rng = (k, label, mn, mx, st, v, f) => `<label class="ctl"><span>${label}</span><input type="range" data-k="${k}" min="${mn}" max="${mx}" step="${st}" value="${v}"><output>${f(v)}</output></label>`;
@@ -1527,10 +1531,12 @@ function openSettings() {
 }
 $('cfgBtn').onclick = () => sheetKind === 'settings' ? closeSheet() : openSettings();
 /* elegir de la biblioteca (grilla de a 3) o de un archivo */
+const pickSel = [];
 function openPicker(mode) {
+  pickSel.length = 0;
   const items = lib.items.filter(i => editSource(i) || i.avi);
-  openSheet('pick', head(mode === 'ov' ? 'Capa de video' : 'Agregar clip') +
-    `<div class="pick-grid">${items.map(it => `<button class="card" data-pk="${it.id}"><span class="th">${it.thumb ? `<img src="${it.thumb}" alt="">` : `<span class="noimg">${icon('film')}</span>`}${it.dur ? `<span class="dur">${fmtShort(it.outDur || it.dur)}</span>` : ''}</span><span class="nm">${esc(baseName(it.name))}</span></button>`).join('')}
+  openSheet('pick', head(mode === 'ov' ? 'Capa de video' : 'Agregar clips', `<button class="stamp ic" data-pkadd title="Agregar" disabled>${icon('check')}<b class="n" id="pkN" hidden></b></button>`) +
+    `<div class="pick-grid">${items.map(it => `<button class="card" data-pk="${it.id}"><span class="sel">${icon('check')}</span><span class="th">${it.thumb ? `<img src="${it.thumb}" alt="">` : `<span class="noimg">${icon('film')}</span>`}${it.dur ? `<span class="dur">${fmtShort(it.outDur || it.dur)}</span>` : ''}</span><span class="nm">${esc(baseName(it.name))}</span></button>`).join('')}
      <button class="card add" data-pkfile><span class="th"><span class="plus">${icon('plus')}</span></span><span class="nm">Archivo</span></button></div>`);
   $('sheet')._pickMode = mode;
 }
@@ -1599,7 +1605,14 @@ $('sheetBody').addEventListener('click', e => {
   }
   if (sheetKind === 'pick') {
     const mode = $('sheet')._pickMode, pk = e.target.closest('[data-pk]');
-    if (pk) { closeSheet(); const it = itemById(pk.dataset.pk); mode === 'ov' ? addLayerClip([it]) : sendToEditor([it]); }
+    if (pk) {
+      const id = pk.dataset.pk, i = pickSel.indexOf(id);
+      if (i >= 0) pickSel.splice(i, 1); else pickSel.push(id);
+      pk.classList.toggle('picked', i < 0); buzz(6);
+      const n = $('pkN'); n.textContent = pickSel.length; n.hidden = pickSel.length < 2;
+      $('sheetBody').querySelector('[data-pkadd]').disabled = !pickSel.length;
+    }
+    if (e.target.closest('[data-pkadd]') && pickSel.length) { const items = pickSel.map(itemById).filter(Boolean); closeSheet(); mode === 'ov' ? addLayerClip(items) : sendToEditor(items); }
     if (e.target.closest('[data-pkfile]')) { $('clipIn')._mode = mode; $('clipIn').click(); }
   }
   if (sheetKind === 'export') {

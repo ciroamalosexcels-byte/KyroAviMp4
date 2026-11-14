@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -28,6 +30,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import androidx.webkit.WebViewAssetLoader
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFprobeKit
@@ -173,27 +182,66 @@ class MainActivity : ComponentActivity() {
             emit("info", job, JSONObject().put("dur", dur).put("w", video?.width ?: 0L).put("h", video?.height ?: 0L).toString())
             val out = File(work, "$job.mp4")
             val proxy = mode == "proxy"
+            val mid = File(work, "$job.mid.mp4")
             val filter = if (proxy) "scale='trunc(min(640,iw)/16)*16':-16,setsar=1" else vf.ifBlank { "scale=trunc(iw/2)*2:-2,setsar=1" }
-            fun args(audio: Boolean, h264: Boolean): Array<String> = buildList {
+            fun args(audio: Boolean): Array<String> = buildList {
                 addAll(listOf("-y", "-hide_banner", "-loglevel", "warning", "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
-                    "-i", src.absolutePath, "-map", "0:v:0", "-vf", filter, "-pix_fmt", "yuv420p"))
-                if (h264) addAll(listOf("-c:v", "h264_mediacodec", "-b:v", if (proxy) "1500k" else "8M", "-g", if (proxy) "15" else "30"))
-                else addAll(listOf("-c:v", "mpeg4", "-q:v", if (proxy) "6" else "3"))
-                if (audio) addAll(listOf("-map", "0:a:0?", "-c:a", "aac", "-b:a", if (proxy) "96k" else "128k", "-ar", "44100")) else add("-an")
-                addAll(listOf("-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024", "-movflags", "+faststart", out.absolutePath))
+                    "-i", src.absolutePath, "-map", "0:v:0", "-vf", filter, "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", if (proxy) "5" else "2", "-g", "15", "-bf", "0"))
+                if (audio) addAll(listOf("-map", "0:a:0?", "-c:a", "aac", "-b:a", if (proxy) "96k" else "160k", "-ar", "44100")) else add("-an")
+                addAll(listOf("-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024", "-movflags", "+faststart", mid.absolutePath))
             }.toTypedArray()
-            var ok = ffmpeg(args(true, true), dur, job)
-            if (!ok && !cancelled) ok = ffmpeg(args(false, true), dur, job)
-            if (!ok && !cancelled) ok = ffmpeg(args(true, false), dur, job)
-            if (!ok && !cancelled) ok = ffmpeg(args(false, false), dur, job)
-            if (ok && out.length() > 0) emit("done", job, "/kyro/$job.mp4")
-            else { out.delete(); emit("error", job, if (cancelled) "cancelado" else "no se pudo procesar") }
+            var ok = ffmpeg(args(true), dur, job, 0.0, 0.55)
+            if (!ok && !cancelled) ok = ffmpeg(args(false), dur, job, 0.0, 0.55)
+            if (!ok || mid.length() == 0L) { mid.delete(); emit("error", job, if (cancelled) "cancelado" else "FFmpeg no pudo leer el video"); return }
+            val h264 = !cancelled && toH264(mid, out, job)
+            if (h264) { mid.delete(); emit("done", job, "/kyro/$job.mp4") }
+            else { out.delete(); mid.delete(); emit("error", job, if (cancelled) "cancelado" else "Android no pudo pasar el video a H.264") }
         } catch (e: Exception) {
             emit("error", job, e.message ?: "error")
         }
     }
 
-    private fun ffmpeg(args: Array<String>, dur: Double, job: String): Boolean {
+    /** Android convierte a H.264/AAC con su codificador de hardware (Media3 Transformer). */
+    private fun toH264(input: File, output: File, job: String): Boolean {
+        val main = Handler(Looper.getMainLooper())
+        val latch = CountDownLatch(1)
+        var ok = false
+        var transformer: Transformer? = null
+        main.post {
+            try {
+                val t = Transformer.Builder(this)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) { ok = true; latch.countDown() }
+                        override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                            emit("log", job, exportException.message ?: "error")
+                            latch.countDown()
+                        }
+                    })
+                    .build()
+                transformer = t
+                t.start(MediaItem.fromUri(Uri.fromFile(input)), output.absolutePath)
+                val holder = ProgressHolder()
+                val poll = object : Runnable {
+                    override fun run() {
+                        if (latch.count == 0L) return
+                        if (cancelled) { t.cancel(); latch.countDown(); return }
+                        if (t.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) emit("progress", job, (0.55 + holder.progress / 100.0 * 0.45).toString())
+                        main.postDelayed(this, 300)
+                    }
+                }
+                main.postDelayed(poll, 300)
+            } catch (e: Exception) {
+                emit("log", job, e.message ?: "error")
+                latch.countDown()
+            }
+        }
+        latch.await()
+        return ok && output.length() > 0
+    }
+
+    private fun ffmpeg(args: Array<String>, dur: Double, job: String, from: Double = 0.0, span: Double = 1.0): Boolean {
         val latch = CountDownLatch(1)
         var ok = false
         var last = -1
@@ -203,7 +251,7 @@ class MainActivity : ComponentActivity() {
         }, null, { stats ->
             if (dur > 0) {
                 val pct = ((stats.time.toDouble() / 1000.0 / dur) * 100).toInt().coerceIn(0, 100)
-                if (pct != last) { last = pct; emit("progress", job, (pct / 100.0).toString()) }
+                if (pct != last) { last = pct; emit("progress", job, (from + pct / 100.0 * span).toString()) }
             }
         })
         latch.await()
