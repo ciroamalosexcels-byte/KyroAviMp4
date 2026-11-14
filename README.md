@@ -1,5 +1,7 @@
 # KyroAviMp4
 
+**[⬇ Descargar la app para Android (APK)](https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/download/latest/KyroAviMp4.apk)** · [Usar en el navegador](https://ciroamalosexcels-byte.github.io/KyroAviMp4/)
+
 Conversor de AVI a MP4 con editor de video para celular.
 
 ## Carpetas
@@ -14,8 +16,8 @@ KyroAviMp4/
 ```
 
 - **Usar la app web:** https://ciroamalosexcels-byte.github.io/KyroAviMp4/ (en Chrome, botón "Instalar" para tenerla en la computadora o el celular).
-- **Descargar el APK:** https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/latest/download/KyroAviMp4.apk
-- **APK clásica (1.7):** https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/latest/download/KyroAviMp4-clasica.apk
+- **Descargar el APK:** https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/download/latest/KyroAviMp4.apk
+- **APK clásica (1.7):** https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/download/latest/KyroAviMp4-clasica.apk
 - **Probar en local:** desde `web/`, `python -m http.server 5173` y abrir http://localhost:5173/.
 - **Rediseño en curso:** `docs/PLAN_REDISENO.md`.
 - **APK:** no se guardan en el repo; se descargan desde GitHub Actions (ver abajo).
