@@ -1,0 +1,71 @@
+name: APK KyroAviMp4
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "webapp/**", "settings.gradle.kts", "build.gradle.kts", ".github/workflows/build-webapp-apk.yml"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: webapp-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      # El servidor de GitHub ya trae el SDK de Android
+      - name: Android 35
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      # Firma fija si existe el secreto; si no, firma de prueba.
+      - name: Firma
+        env:
+          KS_B64: ${{ secrets.KYRO_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/kyro.jks"
+            echo "KYRO_KEYSTORE=$RUNNER_TEMP/kyro.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compilar APK
+        env:
+          KYRO_STORE_PASSWORD: ${{ secrets.KYRO_STORE_PASSWORD }}
+          KYRO_KEY_ALIAS: ${{ secrets.KYRO_KEY_ALIAS }}
+          KYRO_KEY_PASSWORD: ${{ secrets.KYRO_KEY_PASSWORD }}
+        run: gradle :webapp:assembleRelease --no-daemon
+
+      - name: Nombrar APK
+        run: cp webapp/build/outputs/apk/release/webapp-release.apk KyroAviMp4.apk
+
+      - name: Publicar descarga directa
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: KyroAviMp4
+          prerelease: true
+          files: KyroAviMp4.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KyroAviMp4-apk
+          path: KyroAviMp4.apk
+          retention-days: 30

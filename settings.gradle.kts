@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "KyroAviMp4"
 include(":app")
+include(":webapp")

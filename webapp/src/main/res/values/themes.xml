@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Kyro" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/mesa</item>
+        <item name="android:statusBarColor">@color/mesa</item>
+        <item name="android:navigationBarColor">@color/mesa</item>
+    </style>
+    <color name="mesa">#2B6B58</color>
+</resources>
