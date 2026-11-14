@@ -66,7 +66,8 @@ const toast = msg => { const t = $('toast'); t.textContent = msg; t.classList.re
 
 /* ================= preferencias ================= */
 const PREF_KEY = 'kyroavimp4.prefs';
-const prefs = Object.assign({ width: 1010, aspect: 'original', night: false, snap: true }, readJSON(PREF_KEY));
+const prefs = Object.assign({ width: 0, aspect: 'original', night: false, snap: true }, readJSON(PREF_KEY));
+if (!prefs.v2) { if (prefs.width === 1010) prefs.width = 0; prefs.v2 = true; }
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k) || 'null') || {}; } catch (_) { return {}; } }
 function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (_) {} }
 const ASPECTS = [
@@ -78,7 +79,7 @@ const ASPECTS = [
 ];
 const aspectOf = id => ASPECTS.find(a => a.id === id) || ASPECTS[0];
 function outSize(srcW, srcH) {
-  const W = even(prefs.width || 1010);
+  const W = even(prefs.width || srcW || 1280);
   const a = aspectOf(prefs.aspect);
   if (a.r) return { W, H: even(W / a.r) };
   if (srcW && srcH) return { W, H: even(W * srcH / srcW) };
@@ -110,8 +111,9 @@ const lib = { items: [], picked: new Set() };
 const urlCache = new Map(); // blob -> objectURL
 const urlFor = blob => { if (!blob) return ''; let u = urlCache.get(blob); if (!u) { u = URL.createObjectURL(blob); urlCache.set(blob, u); } return u; };
 const itemById = id => lib.items.find(i => i.id === id);
-const editSource = it => it && (it.out || (it.playable ? it.file : null));
-const persistItem = it => DB.putItem({ id: it.id, name: it.name, size: it.size, avi: it.avi, file: it.file, out: it.out || null, dur: it.dur, w: it.w, h: it.h,
+const editSource = it => it && (it.out || (it.playable ? it.file : it.proxy) || null);
+const fullSource = it => it && (it.out || (it.playable ? it.file : null));
+const persistItem = it => DB.putItem({ id: it.id, name: it.name, size: it.size, avi: it.avi, file: it.file, out: it.out || null, proxy: it.proxy || null, dur: it.dur, w: it.w, h: it.h,
   thumb: it.thumb || '', status: it.status === 'converting' || it.status === 'queued' ? 'idle' : it.status, playable: it.playable, err: it.err || '', outDur: it.outDur || 0 });
 
 function probe(blob) {
@@ -170,6 +172,7 @@ async function addFiles(files, { toEditor = false } = {}) {
     it.status = 'idle';
     persistItem(it);
     renderGrid();
+    if (!p.ok) queuePreview(it); // AVI: se arma la vista previa completa solo
   }
   toast(added.length === 1 ? 'Video agregado' : `${added.length} videos agregados`);
   if (toEditor) await sendToEditor(added);
@@ -181,6 +184,7 @@ function statusLine(it) {
   if (it.status === 'probing') return 'Leyendo…';
   if (it.status === 'queued') return 'En cola';
   if (it.status === 'converting') return `Convirtiendo ${Math.round(it.progress * 100)} %`;
+  if (it.status === 'preview') return `Vista previa ${Math.round(it.progress * 100)} %`;
   if (it.status === 'error') return it.err || 'No se pudo convertir';
   if (it.out) return `MP4 listo · ${fmtBytes(it.out.size)}`;
   return `${fmtBytes(it.size)}${it.w ? ` · ${it.w}×${it.h}` : ''}`;
@@ -197,7 +201,7 @@ function renderGrid() {
         ${it.out ? `<span class="done-dot" title="MP4 listo">${icon('check')}</span>` : ''}
         <span class="sel" data-pick="${it.id}">${icon('check')}</span>
         ${it.dur ? `<span class="dur">${fmtShort(it.outDur || it.dur)}</span>` : ''}
-        ${st === 'converting' ? `<span class="busy">${Math.round(it.progress * 100)} %</span><span class="bar"><i style="width:${it.progress * 100}%"></i></span>` : ''}
+        ${st === 'converting' || st === 'preview' ? `<span class="busy">${Math.round(it.progress * 100)} %</span><span class="bar"><i style="width:${it.progress * 100}%"></i></span>` : ''}
         ${st === 'queued' ? '<span class="busy">en cola</span>' : ''}
         ${st === 'probing' ? '<span class="busy">…</span>' : ''}
         ${st === 'error' ? `<span class="err-dot" title="${esc(it.err || 'Error')}">!</span>` : ''}
@@ -210,13 +214,12 @@ function renderGrid() {
   $('actbar').hidden = !n;
   $('pickAllBtn').classList.toggle('on', !!p && p === n);
   $('pickAllBtn').title = p && p === n ? 'Ninguno' : 'Elegir todos';
-  $('pickInfo').textContent = p ? `${p} elegido${p > 1 ? 's' : ''}` : 'Todos';
   const target = targets();
-  $('removeBtn').disabled = !p || engine.busy;
-  $('toEditorBtn').disabled = !target.length || engine.busy;
+  $('removeBtn').disabled = !p || engine.converting;
+  $('toEditorBtn').disabled = !target.length || engine.converting;
   const conv = target.filter(i => !i.out);
-  $('convertBtn').disabled = !conv.length || engine.busy;
-  $('convertTxt').textContent = conv.length ? `Convertir${conv.length > 1 ? ' ' + conv.length : ''}` : 'Listos';
+  $('convertBtn').disabled = !conv.length || engine.converting;
+  $('convertN').textContent = conv.length > 1 ? conv.length : ''; $('convertN').hidden = conv.length < 2;
   $('navN').hidden = !n; $('navN').textContent = n;
 }
 const targets = () => lib.picked.size ? lib.items.filter(i => lib.picked.has(i.id)) : lib.items.slice();
@@ -247,6 +250,7 @@ function removeItem(id) {
 function outLabel() {
   const ref = lib.items.find(i => i.w) || {};
   const { W, H } = outSize(ref.w, ref.h);
+  if (!prefs.width && !ref.w) return `Ancho original · ${prefs.aspect === 'original' ? 'Original' : prefs.aspect}`;
   return `${W}${H ? '×' + H : ''} · ${prefs.aspect === 'original' ? 'Original' : prefs.aspect}`;
 }
 function renderOut() {
@@ -273,7 +277,7 @@ function openPreview(id) {
 }
 function renderModal() {
   const it = itemById(modalId); if (!it) return closePreview();
-  const src = it.out || (it.playable ? it.file : it.sample);
+  const src = editSource(it);
   const stage = $('mStage');
   const cur = stage.querySelector('video');
   if (src) {
@@ -281,23 +285,22 @@ function renderModal() {
       stage.innerHTML = `<video controls playsinline autoplay data-src="${urlFor(src)}" src="${urlFor(src)}"></video>`;
     }
   } else {
-    const busy = engine.busy;
-    stage.innerHTML = `<div class="m-msg">${icon('film')}<span>El navegador no abre AVI directamente. Podés generar una muestra de 3 segundos o convertirlo a MP4.</span>
-      <button class="pill" id="mSample" ${busy ? 'disabled' : ''}><span>${icon('eye')}</span>${busy ? 'El motor está ocupado…' : 'Ver muestra de 3 s'}</button></div>`;
-    const b = $('mSample'); if (b) b.onclick = () => makeSample(it);
+    const err = it.status === 'error';
+    stage.innerHTML = `<div class="m-msg">${icon('film')}<span>${err ? 'No se pudo leer este video' : `Preparando vista previa ${Math.round((it.progress || 0) * 100)} %`}</span>
+      ${err ? `<button class="round" id="mRetry" title="Reintentar">${icon('reset')}</button>` : `<span class="track m-track"><i style="width:${(it.progress || 0) * 100}%"></i></span>`}</div>`;
+    const b = $('mRetry'); if (b) b.onclick = () => { it.status = 'idle'; queuePreview(it); renderModal(); };
   }
   const info = [];
   if (it.w) info.push(`${it.w} × ${it.h} px`);
   if (it.dur) info.push(fmtShort(it.dur));
   info.push(fmtBytes(it.size));
   if (it.out) info.push(`MP4 ${fmtBytes(it.out.size)}`);
-  if (it.sample && !it.out && !it.playable) info.push('Mostrando muestra de 3 s');
   $('mInfo').innerHTML = info.map(t => `<span>${esc(t)}</span>`).join('');
   const acts = [];
-  acts.push(`<button class="pill" data-m="remove"><span>${icon('trash')}</span>Quitar</button>`);
-  if (it.out) acts.push(`<button class="pill" data-m="download"><span>${icon('download')}</span>Descargar MP4</button>`);
-  else acts.push(`<button class="pill" data-m="convert" ${engine.busy ? 'disabled' : ''}><span>${icon('convert')}</span>Convertir</button>`);
-  acts.push(`<button class="stamp" data-m="editor" ${engine.busy && !editSource(it) ? 'disabled' : ''}><span>${icon('timeline')}</span>Al editor</button>`);
+  acts.push(`<button class="round" data-m="remove" title="Quitar">${icon('trash')}</button>`);
+  if (it.out) acts.push(`<button class="round" data-m="download" title="Descargar MP4">${icon('download')}</button>`);
+  else acts.push(`<button class="round" data-m="convert" title="Convertir a MP4" ${engine.converting ? 'disabled' : ''}>${icon('convert')}</button>`);
+  acts.push(`<span class="spacer"></span><button class="stamp ic" data-m="editor" title="Al editor" ${!editSource(it) ? 'disabled' : ''}>${icon('timeline')}</button>`);
   $('mActions').innerHTML = acts.join('');
 }
 function closePreview() {
@@ -359,62 +362,133 @@ function setProg(r, txt) {
   $('prog').hidden = false; $('progBar').style.width = (r * 100).toFixed(1) + '%'; if (txt) $('progTxt').textContent = txt;
 }
 const hideProg = () => { $('prog').hidden = true; };
-$('cancelBtn').onclick = () => { engine.cancel = true; killFF(); toast('Cancelado'); };
+$('cancelBtn').onclick = () => { engine.cancel = true; killFF(); if (NATIVE) try { window.KyroAndroid.cancel(); } catch (_) {} toast('Cancelado'); };
 
-function convertArgs(inN, outN, it, noAudio) {
+/* en la APK, FFmpeg nativo del celular: lee AVI y es mucho más rápido */
+const NATIVE = !!(window.KyroAndroid && window.KyroAndroid.process);
+const fileKey = it => `${it.name}|${it.size}`;
+const canNative = it => { try { return NATIVE && window.KyroAndroid.canProcess(fileKey(it)); } catch (_) { return false; } };
+const nativeJobs = new Map();
+window.kyroNative = (type, job, data) => {
+  const j = nativeJobs.get(job); if (!j) return;
+  if (type === 'progress') { if (j.onProgress) j.onProgress(clamp(+data || 0, 0, 1)); }
+  else if (type === 'info') { try { j.info = JSON.parse(data); } catch (_) {} }
+  else if (type === 'done') {
+    nativeJobs.delete(job);
+    fetch(data).then(r => { if (!r.ok) throw new Error('lectura'); return r.blob(); })
+      .then(b => { try { window.KyroAndroid.release(job); } catch (_) {} j.resolve({ blob: new Blob([b], { type: 'video/mp4' }), info: j.info }); })
+      .catch(j.reject);
+  } else if (type === 'error') { nativeJobs.delete(job); j.reject(new Error(data || 'error')); }
+};
+function nativeRun(it, mode, vf, onProgress) {
+  return new Promise((resolve, reject) => {
+    const job = 'j' + uid();
+    nativeJobs.set(job, { resolve, reject, onProgress, info: null });
+    if (!window.KyroAndroid.process(job, fileKey(it), mode, vf || '')) { nativeJobs.delete(job); reject(new Error('archivo no disponible')); }
+  });
+}
+/* filtro de salida: ancho original o elegido, proporción sin recortar */
+function convertVF(it) {
+  const a = aspectOf(prefs.aspect);
+  if (!prefs.width && !it.w) return a.r ? `scale=1280:${even(1280 / a.r)}:force_original_aspect_ratio=decrease,pad=1280:${even(1280 / a.r)}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1` : 'scale=trunc(iw/2)*2:-2,setsar=1';
   const { W, H } = outSize(it.w, it.h);
-  const vf = prefs.aspect === 'original' ? `scale=${W}:-2,setsar=1`
-    : `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
+  return a.r ? `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1` : `scale=${W}:-2,setsar=1`;
+}
+function convertArgs(inN, outN, it, noAudio) {
   return ['-fflags', '+genpts', '-err_detect', 'ignore_err', '-i', inN, '-map', '0:v:0', ...(noAudio ? ['-an'] : ['-map', '0:a:0?']),
-    '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-vf', convertVF(it), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
     ...(noAudio ? [] : ['-c:a', 'aac', '-b:a', '128k']), '-movflags', '+faststart', '-max_muxing_queue_size', '2048', '-y', outN];
 }
+/* datos del original leídos del registro del motor web */
+function infoFromLog() {
+  const info = {};
+  for (const l of engine.log) {
+    const d = l.match(/Duration:\s*(\d+):(\d+):([\d.]+)/); if (d && !info.dur) info.dur = +d[1] * 3600 + +d[2] * 60 + +d[3];
+    const v = l.match(/Video:.*?(\d{2,5})x(\d{2,5})/); if (v && !info.w) { info.w = +v[1]; info.h = +v[2]; }
+  }
+  return info;
+}
+async function wasmRun(it, argsFor, onProgress) {
+  while (engine.busy) await new Promise(r => setTimeout(r, 400));
+  engine.busy = true;
+  const ext = (it.name.match(/\.[^.]+$/) || ['.avi'])[0].toLowerCase(), inN = 'in' + ext, outN = 'out.mp4';
+  try {
+    let ff = await getFF();
+    const bytes = new Uint8Array(await it.file.arrayBuffer());
+    ff.FS('writeFile', inN, bytes);
+    engine.log = []; engine.onProgress = onProgress;
+    let data;
+    try { await run(ff, argsFor(inN, outN, false)); data = readOut(ff, outN); }
+    catch (e) {
+      if (engine.cancel) throw e;
+      killFF(); ff = await getFF(); ff.FS('writeFile', inN, bytes); engine.log = [];
+      await run(ff, argsFor(inN, outN, true)); data = readOut(ff, outN);
+    }
+    const info = infoFromLog();
+    rm(ff, inN); rm(ff, outN);
+    return { blob: new Blob([data], { type: 'video/mp4' }), info };
+  } catch (e) { killFF(); throw e; }
+  finally { killFF(); engine.busy = false; engine.onProgress = null; hideProg(); }
+}
+const proxyArgs = (inN, outN, noAudio) => ['-fflags', '+genpts', '-err_detect', 'ignore_err', '-i', inN, '-map', '0:v:0', ...(noAudio ? ['-an'] : ['-map', '0:a:0?']),
+  '-vf', "scale='min(640,iw)':-2,setsar=1", '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', '-pix_fmt', 'yuv420p', ...(noAudio ? [] : ['-c:a', 'aac', '-b:a', '96k']), '-y', outN];
+
+/* vista previa completa de los AVI: se arma sola, de a uno */
+const previewQ = []; let previewRunning = false;
+function queuePreview(it) {
+  if (!it || it.proxy || it.playable || it.out || previewQ.includes(it)) return;
+  it.status = 'preview'; it.progress = 0; previewQ.push(it); renderGrid(); pumpPreview();
+}
+async function pumpPreview() {
+  if (previewRunning) return; previewRunning = true;
+  while (previewQ.length) {
+    const it = previewQ.shift();
+    if (!lib.items.includes(it) || it.out || it.proxy) continue;
+    const onP = r => { it.progress = r; updateCard(it); if (modalId === it.id) renderModal(); };
+    try {
+      const { blob, info } = canNative(it) ? await nativeRun(it, 'proxy', '', onP) : await wasmRun(it, proxyArgs, onP);
+      it.proxy = blob;
+      const p = await probe(blob);
+      if (p.ok) { it.thumb = p.thumb; it.outDur = p.dur; it.dur = (info && info.dur) || p.dur; it.w = (info && info.w) || it.w || p.w; it.h = (info && info.h) || it.h || p.h; }
+      it.status = 'idle';
+    } catch (e) { console.warn(e); it.status = 'error'; it.err = 'No se pudo leer'; }
+    persistItem(it); renderGrid(); renderOut(); if (modalId === it.id) renderModal();
+  }
+  previewRunning = false;
+}
+
 async function convertItems(items) {
   items = items.filter(i => !i.out && i.status !== 'converting');
-  if (!items.length || engine.busy) return [];
-  engine.busy = true; engine.cancel = false;
+  if (!items.length || engine.converting) return [];
+  engine.converting = true; engine.cancel = false;
   items.forEach(i => { i.status = 'queued'; i.err = ''; });
   renderGrid();
   const done = [];
   try {
-    let ff = await getFF();
     for (let k = 0; k < items.length && !engine.cancel; k++) {
       const it = items[k];
       it.status = 'converting'; it.progress = 0; renderGrid();
-      const label = `Convirtiendo ${k + 1} de ${items.length}: ${it.name}`;
-      engine.onProgress = r => { it.progress = r; setProg((k + r) / items.length, label); updateCard(it); };
-      const ext = (it.name.match(/\.[^.]+$/) || ['.avi'])[0].toLowerCase();
-      const inN = 'in' + ext, outN = 'out.mp4';
+      const label = `Convirtiendo ${k + 1} de ${items.length}`;
+      const onP = r => { it.progress = r; setProg((k + r) / items.length, label); updateCard(it); };
+      setProg(k / items.length, label);
       try {
-        const bytes = new Uint8Array(await it.file.arrayBuffer());
-        ff.FS('writeFile', inN, bytes);
-        let data;
-        try { await run(ff, convertArgs(inN, outN, it, false)); data = readOut(ff, outN); }
-        catch (e) {
-          if (engine.cancel) throw e;
-          // AVI viejos con audio raro: motor nuevo y reintento sin audio
-          killFF(); ff = await getFF(); ff.FS('writeFile', inN, bytes);
-          await run(ff, convertArgs(inN, outN, it, true)); data = readOut(ff, outN);
-        }
-        it.out = new Blob([data], { type: 'video/mp4' });
+        const { blob, info } = canNative(it) ? await nativeRun(it, 'convert', convertVF(it), onP) : await wasmRun(it, (i, o, na) => convertArgs(i, o, it, na), onP);
+        it.out = blob;
+        if (info) { it.w = info.w || it.w; it.h = info.h || it.h; it.dur = info.dur || it.dur; }
         const p = await probe(it.out);
-        if (p.ok) { if (!it.w) { it.w = p.w; it.h = p.h; } it.outDur = p.dur; if (!it.dur) it.dur = p.dur; if (!it.thumb || !it.playable) it.thumb = p.thumb; }
+        if (p.ok) { it.outDur = p.dur; if (!it.dur) it.dur = p.dur; if (!it.thumb) it.thumb = p.thumb; if (!it.w) { it.w = p.w; it.h = p.h; } }
         it.status = 'done'; done.push(it);
       } catch (e) {
-        killFF(); if (!engine.cancel) ff = await getFF();
         it.status = engine.cancel ? 'idle' : 'error';
         it.err = engine.cancel ? '' : 'No se pudo convertir este archivo';
-        if (engine.cancel) break;
         console.warn(e);
-      } finally { if (engine.ff) { rm(engine.ff, inN); rm(engine.ff, outN); } }
+        if (engine.cancel) break;
+      }
       persistItem(it); renderGrid();
     }
     if (!engine.cancel) toast(done.length ? `Listo: ${done.length} MP4` : 'No se pudo convertir');
-  } catch (e) {
-    if (!engine.cancel) toast(e.message || 'Error del motor');
-    items.forEach(i => { if (i.status !== 'done') { i.status = 'idle'; } });
   } finally {
-    engine.busy = false; engine.onProgress = null; hideProg();
+    engine.converting = false; hideProg();
     items.forEach(i => { if (i.status === 'queued' || i.status === 'converting') i.status = 'idle'; });
     renderGrid(); if (modalId) renderModal();
   }
@@ -424,22 +498,6 @@ function updateCard(it) {
   const card = document.querySelector(`.card[data-id="${it.id}"]`); if (!card) return;
   const b = card.querySelector('.bar i'); if (b) b.style.width = (it.progress * 100) + '%';
   const s = card.querySelector('.busy'); if (s) s.textContent = Math.round(it.progress * 100) + ' %';
-  const m = card.querySelector('.mt'); if (m) m.textContent = statusLine(it);
-}
-async function makeSample(it) {
-  if (engine.busy) return;
-  engine.busy = true; engine.cancel = false; renderModal();
-  try {
-    const ff = await getFF();
-    engine.onProgress = r => setProg(r, 'Generando muestra de 3 s…');
-    ff.FS('writeFile', 'sin.avi', new Uint8Array(await it.file.arrayBuffer()));
-    await run(ff, ['-fflags', '+genpts', '-err_detect', 'ignore_err', '-t', '3', '-i', 'sin.avi', '-an', '-vf', 'scale=480:-2,setsar=1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', 's.mp4']);
-    it.sample = new Blob([readOut(ff, 's.mp4')], { type: 'video/mp4' });
-    rm(ff, 'sin.avi'); rm(ff, 's.mp4');
-    const p = await probe(it.sample);
-    if (p.ok && !it.thumb) { it.thumb = p.thumb; it.w = it.w || 0; persistItem(it); }
-  } catch (e) { if (!engine.cancel) toast('No se pudo generar la muestra'); console.warn(e); }
-  finally { engine.busy = false; engine.onProgress = null; hideProg(); renderGrid(); if (modalId) renderModal(); }
 }
 
 /* ================= editor: modelo, historial ================= */
@@ -1440,8 +1498,10 @@ function openFormat() {
   const { H } = outSize(ref.w, ref.h);
   openSheet('format', head('Formato') +
     `<div class="seg">${ASPECTS.map(a => `<button class="${prefs.aspect === a.id ? 'on' : ''}" data-a="${a.id}">${a.label}</button>`).join('')}</div>
-     <div class="sh-row"><label class="out-size">Ancho <input class="num" id="fmtW" type="number" min="160" max="3840" step="2" value="${prefs.width}"></label><span class="out-size">× ${H || 'auto'} <small>px</small></span></div>`);
-  $('fmtW').onchange = () => { prefs.width = clamp(even(+$('fmtW').value || 1010), 160, 3840); savePrefs(); renderOut(); openFormat(); };
+     <div class="label sh-sub">Ancho</div>
+     <div class="seg">${[[0, 'Original'], [1920, '1920'], [1280, '1280'], [1010, '1010'], [720, '720']].map(([w, l]) => `<button class="${prefs.width === w ? 'on' : ''}" data-w="${w}">${l}</button>`).join('')}</div>
+     <div class="sh-row"><label class="out-size"><input class="num" id="fmtW" type="number" min="160" max="3840" step="2" placeholder="otro" value="${prefs.width && ![1920, 1280, 1010, 720].includes(prefs.width) ? prefs.width : ''}"></label><span class="out-size">${outLabel()}</span></div>`);
+  $('fmtW').onchange = () => { const v = +$('fmtW').value; prefs.width = v ? clamp(even(v), 160, 3840) : 0; savePrefs(); renderOut(); openFormat(); };
 }
 function openSettings() {
   openSheet('settings', head('Configuración') +
@@ -1512,7 +1572,10 @@ $('sheetBody').addEventListener('click', e => {
   const vb = e.target.closest('[data-vol]'); if (vb && s) { commit(() => { s.it.vol = +vb.dataset.vol; }); openSound(); }
   const tc = e.target.closest('[data-txc]'); if (tc && s) { commit(() => { s.it.color = tc.dataset.txc; }); openText(); }
   const tb2 = e.target.closest('[data-txb]'); if (tb2 && s) { commit(() => { s.it.bg = tb2.dataset.txb; }); openText(); }
-  if (sheetKind === 'format') { const b = e.target.closest('[data-a]'); if (b) { prefs.aspect = b.dataset.a; savePrefs(); renderOut(); layoutFrame(); openFormat(); } }
+  if (sheetKind === 'format') {
+    const b = e.target.closest('[data-a]'); if (b) { prefs.aspect = b.dataset.a; savePrefs(); renderOut(); layoutFrame(); openFormat(); }
+    const w = e.target.closest('[data-w]'); if (w) { prefs.width = +w.dataset.w; savePrefs(); renderOut(); openFormat(); }
+  }
   if (sheetKind === 'settings') {
     const th = e.target.closest('[data-theme]'), sn = e.target.closest('[data-snap]');
     if (th) { prefs.night = th.dataset.theme === 'night'; savePrefs(); syncNight(); openSettings(); }
@@ -1533,7 +1596,7 @@ $('sheetBody').addEventListener('click', e => {
 /* ================= exportación del montaje ================= */
 let lastExport = null;
 function exportSize() {
-  const first = project.clips[0] && assetOf(project.clips[0].assetId);
+  const first = project.clips[0] && itemById(project.clips[0].assetId);
   const { W, H } = outSize(first && first.w, first && first.h);
   return { W, H: H || even(W * 9 / 16) };
 }
@@ -1558,7 +1621,11 @@ async function hasAudio(blob) {
 const n3 = v => (+v).toFixed(3);
 async function exportMontage() {
   if (engine.busy || !project.clips.length) return;
-  engine.busy = true; engine.cancel = false; pause();
+  pause();
+  const usados = [...new Set([...project.clips.map(c => c.assetId), ...project.layers.flatMap(l => l.items.map(i => i.assetId))])].map(itemById).filter(Boolean);
+  const faltan = usados.filter(i => !fullSource(i));
+  if (faltan.length) { closeSheet(); toast('Convirtiendo los AVI en calidad final…'); await convertItems(faltan); if (faltan.some(i => !fullSource(i))) { toast('No se pudieron convertir todos los AVI'); return; } }
+  engine.busy = true; engine.cancel = false;
   openExport({ busy: true });
   const bar = r => { const b = $('exBar'); if (b) b.style.width = (r * 100).toFixed(1) + '%'; };
   const txt = t => { const x = $('exTxt'); if (x) x.textContent = t; };
@@ -1576,7 +1643,7 @@ async function exportMontage() {
     const idx = {}, aud = {};
     for (let k = 0; k < ids.length; k++) {
       txt(`Cargando ${k + 1}/${ids.length}…`); bar(k / ids.length * 0.08);
-      const blob = editSource(itemById(ids[k]));
+      const blob = fullSource(itemById(ids[k]));
       aud[ids[k]] = await hasAudio(blob);
       const name = `v${k}.mp4`; ff.FS('writeFile', name, new Uint8Array(await blob.arrayBuffer()));
       idx[ids[k]] = addIn(name);
@@ -1708,6 +1775,7 @@ async function init() {
   project.layers.forEach(l => { l.items = l.items.filter(c => okAsset(c.assetId)); });
   project.layers = project.layers.filter(l => l.items.length);
   renderGrid();
+  lib.items.filter(i => !editSource(i)).forEach(i => { i.status = 'idle'; queuePreview(i); });
   project.audios.forEach(ensureAudio);
   try { await document.fonts.load('800 20px Archivo'); } catch (_) {}
   renderTimeline();

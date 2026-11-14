@@ -164,6 +164,15 @@ html,body{background:var(--stage)}
 .acts .ib.on{background:#fffaf0;color:#16130f}
 .pickinfo{flex:1;font-weight:800;font-size:.74rem;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
 .acts .stamp{box-shadow:none;height:44px;padding:0 1rem}
+.acts .spacer{flex:1}
+.actbar-in{width:auto!important;min-width:220px}
+.stamp.ic{position:relative;width:var(--h);padding:0;border-radius:50%}
+.stamp.ic .n{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;border-radius:999px;background:var(--hl);color:#16130f;font-size:.66rem;font-weight:800;display:grid;place-items:center;padding:0 4px;box-shadow:2px 2px 0 #16130f}
+.m-actions{align-items:center}
+.m-actions .spacer{flex:1}
+.m-actions .stamp{flex:0 0 auto}
+.m-track{display:block;width:180px;height:10px;background:rgba(255,250,240,.2);border-radius:999px;overflow:hidden}
+.m-track i{display:block;height:100%;background:var(--hl)}
 .acts .stamp:hover:not(:disabled){box-shadow:none;transform:translate(-1px,-1px)}
 .prog{display:flex;align-items:center;gap:10px;font-weight:800;font-size:.74rem;padding:0 4px 0 10px;height:44px}
 .prog #progTxt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
@@ -378,8 +387,8 @@ html,body{background:var(--stage)}
             <button class="ib" id="removeBtn" title="Quitar" data-ico="trash"></button>
             <button class="ib" id="toEditorBtn" title="Al editor" data-ico="timeline"></button>
           </div>
-          <span class="pickinfo" id="pickInfo"></span>
-          <button class="stamp" id="convertBtn"><span data-ico="convert"></span><span id="convertTxt">Convertir</span></button>
+          <span class="spacer"></span>
+          <button class="stamp ic" id="convertBtn" title="Convertir a MP4"><span data-ico="convert"></span><b class="n" id="convertN" hidden></b></button>
         </div>
       </div>
     </div>
