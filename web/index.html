@@ -198,7 +198,12 @@ html,body{background:var(--stage)}
 .m-info{display:flex;flex-wrap:wrap;gap:6px}
 .m-info span{font-size:.74rem;font-weight:800;background:var(--bg);padding:.3rem .7rem;border-radius:999px}
 .m-actions{display:flex;flex-wrap:wrap;gap:10px}
-.m-actions .stamp{flex:1}
+.m-actions .stamp{flex:0 0 auto}
+.m-actions .round,.m-ctrl .round{background:var(--bg);box-shadow:3px 3px 0 var(--shadow-ink)}
+.m-ctrl{display:flex;align-items:center;gap:10px}
+.m-ctrl input{flex:1;min-width:0}
+.m-ctrl span{font-weight:800;font-size:.74rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.m-stage video{cursor:pointer}
 
 /* ---------- editor ---------- */
 #editor{gap:0}
@@ -437,6 +442,7 @@ html,body{background:var(--stage)}
   <div class="modal" role="dialog" aria-modal="true">
     <div class="m-head"><span class="chip" id="mType">MP4</span><b id="mName"></b><button class="round" id="mClose" title="Cerrar" data-ico="x"></button></div>
     <div class="m-stage" id="mStage"></div>
+    <div class="m-ctrl" id="mCtrl" hidden><button class="round" id="mPlay" title="Reproducir"></button><input type="range" id="mSeek" min="0" max="1000" value="0"><span id="mTime"></span></div>
     <div class="m-info" id="mInfo"></div>
     <div class="m-actions" id="mActions"></div>
   </div>

@@ -1,7 +1,7 @@
 /* KyroAviMp4: funciona sin conexión y se actualiza sola.
    La app propia va "primero la red" (siempre la última versión si hay internet);
    el motor FFmpeg del CDN se guarda la primera vez que se usa. */
-const CACHE = 'kyroavimp4-v3';
+const CACHE = 'kyroavimp4-v4';
 const SHELL = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'fonts/archivo.css',
   'fonts/k3kPo8UDI-1M0wlSV9XAw6lQkqWY8Q82sLyTOxK-vA.woff2', 'fonts/k3kPo8UDI-1M0wlSV9XAw6lQkqWY8Q82sLydOxI.woff2',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon.svg'];
