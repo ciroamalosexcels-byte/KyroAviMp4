@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths: ["web/**", "webapp/**", "settings.gradle.kts", "build.gradle.kts", ".github/workflows/build-webapp-apk.yml"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
