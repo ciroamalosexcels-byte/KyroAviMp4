@@ -4,3 +4,6 @@
 local.properties
 build/
 app/build/
+
+# APK compiladas: se descargan desde GitHub Actions, no se guardan en el repo
+*.apk

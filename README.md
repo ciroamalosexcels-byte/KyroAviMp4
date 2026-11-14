@@ -1,4 +1,24 @@
-# AVI a MP4 para Android
+# KyroAviMp4
+
+Conversor de AVI a MP4 con editor de video para celular.
+
+## Carpetas
+
+```
+KyroAviMp4/
+├── app/        App Android (Kotlin + Compose, FFmpeg nativo). Versión publicada: 1.7
+├── web/        Prototipo del rediseño con estética Kyro (index.html + app.js + fuentes)
+├── docs/       Plan del rediseño, roadmap del editor y validación técnica de FFmpeg
+└── .github/    Compilación de la APK y publicación de la web en GitHub Pages
+```
+
+- **Usar la app web:** https://ciroamalosexcels-byte.github.io/KyroAviMp4/ (en Chrome, botón "Instalar" para tenerla en la computadora o el celular).
+- **Descargar el APK:** https://github.com/ciroamalosexcels-byte/KyroAviMp4/releases/latest/download/KyroAviMp4.apk
+- **Probar en local:** desde `web/`, `python -m http.server 5173` y abrir http://localhost:5173/.
+- **Rediseño en curso:** `docs/PLAN_REDISENO.md`.
+- **APK:** no se guardan en el repo; se descargan desde GitHub Actions (ver abajo).
+
+## App Android actual (1.7)
 
 Aplicacion Android para seleccionar varios videos AVI, previsualizarlos y convertirlos a MP4. Permite elegir el ancho, ver el alto calculado y usar la proporcion original o formatos 1:1, 3:4, 4:3 y 16:9.
 
@@ -18,7 +38,7 @@ Usa `ffmpeg-kit-min`, que ejecuta FFmpeg nativamente dentro de la aplicacion e i
 
 FFmpeg puede incluir componentes con requisitos de licencia propios. Revise las licencias de sus codecs antes de distribuir la aplicacion.
 
-El desarrollo futuro del editor se encuentra dividido por etapas en `ROADMAP.md`.
+El desarrollo futuro del editor se encuentra dividido por etapas en `docs/ROADMAP.md`.
 
 ## Editor móvil
 
