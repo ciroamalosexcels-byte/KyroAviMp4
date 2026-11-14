@@ -173,15 +173,19 @@ class MainActivity : ComponentActivity() {
             emit("info", job, JSONObject().put("dur", dur).put("w", video?.width ?: 0L).put("h", video?.height ?: 0L).toString())
             val out = File(work, "$job.mp4")
             val proxy = mode == "proxy"
-            val filter = if (proxy) "scale='min(640,iw)':-2,setsar=1" else vf.ifBlank { "scale=trunc(iw/2)*2:-2,setsar=1" }
-            fun args(audio: Boolean): Array<String> = buildList {
+            val filter = if (proxy) "scale='trunc(min(640,iw)/16)*16':-16,setsar=1" else vf.ifBlank { "scale=trunc(iw/2)*2:-2,setsar=1" }
+            fun args(audio: Boolean, h264: Boolean): Array<String> = buildList {
                 addAll(listOf("-y", "-hide_banner", "-loglevel", "warning", "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
-                    "-i", src.absolutePath, "-map", "0:v:0", "-vf", filter, "-c:v", "mpeg4", "-q:v", if (proxy) "6" else "3", "-pix_fmt", "yuv420p"))
+                    "-i", src.absolutePath, "-map", "0:v:0", "-vf", filter, "-pix_fmt", "yuv420p"))
+                if (h264) addAll(listOf("-c:v", "h264_mediacodec", "-b:v", if (proxy) "1500k" else "8M", "-g", if (proxy) "15" else "30"))
+                else addAll(listOf("-c:v", "mpeg4", "-q:v", if (proxy) "6" else "3"))
                 if (audio) addAll(listOf("-map", "0:a:0?", "-c:a", "aac", "-b:a", if (proxy) "96k" else "128k", "-ar", "44100")) else add("-an")
                 addAll(listOf("-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "1024", "-movflags", "+faststart", out.absolutePath))
             }.toTypedArray()
-            var ok = ffmpeg(args(true), dur, job)
-            if (!ok && !cancelled) ok = ffmpeg(args(false), dur, job)
+            var ok = ffmpeg(args(true, true), dur, job)
+            if (!ok && !cancelled) ok = ffmpeg(args(false, true), dur, job)
+            if (!ok && !cancelled) ok = ffmpeg(args(true, false), dur, job)
+            if (!ok && !cancelled) ok = ffmpeg(args(false, false), dur, job)
             if (ok && out.length() > 0) emit("done", job, "/kyro/$job.mp4")
             else { out.delete(); emit("error", job, if (cancelled) "cancelado" else "no se pudo procesar") }
         } catch (e: Exception) {

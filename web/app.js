@@ -111,7 +111,9 @@ const lib = { items: [], picked: new Set() };
 const urlCache = new Map(); // blob -> objectURL
 const urlFor = blob => { if (!blob) return ''; let u = urlCache.get(blob); if (!u) { u = URL.createObjectURL(blob); urlCache.set(blob, u); } return u; };
 const itemById = id => lib.items.find(i => i.id === id);
-const editSource = it => it && (it.out || (it.playable ? it.file : it.proxy) || null);
+const editSource = it => it && ((it.playable ? it.file : (it.proxy || it.out)) || null);
+/* sin el ícono gris de play que pone Android/Chrome sobre los videos */
+const NOPOSTER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const fullSource = it => it && (it.out || (it.playable ? it.file : null));
 const persistItem = it => DB.putItem({ id: it.id, name: it.name, size: it.size, avi: it.avi, file: it.file, out: it.out || null, proxy: it.proxy || null, dur: it.dur, w: it.w, h: it.h,
   thumb: it.thumb || '', status: it.status === 'converting' || it.status === 'queued' ? 'idle' : it.status, playable: it.playable, err: it.err || '', outDur: it.outDur || 0 });
@@ -282,9 +284,12 @@ function renderModal() {
   const cur = stage.querySelector('video');
   if (src) {
     if (!cur || cur.dataset.src !== urlFor(src)) {
-      stage.innerHTML = `<video controls playsinline autoplay data-src="${urlFor(src)}" src="${urlFor(src)}"></video>`;
+      stage.innerHTML = `<video playsinline autoplay poster="${NOPOSTER}" data-src="${urlFor(src)}" src="${urlFor(src)}"></video>`;
+      wirePlayer(stage.querySelector('video'));
     }
+    $('mCtrl').hidden = false;
   } else {
+    $('mCtrl').hidden = true;
     const err = it.status === 'error';
     stage.innerHTML = `<div class="m-msg">${icon('film')}<span>${err ? 'No se pudo leer este video' : `Preparando vista previa ${Math.round((it.progress || 0) * 100)} %`}</span>
       ${err ? `<button class="round" id="mRetry" title="Reintentar">${icon('reset')}</button>` : `<span class="track m-track"><i style="width:${(it.progress || 0) * 100}%"></i></span>`}</div>`;
@@ -302,6 +307,17 @@ function renderModal() {
   else acts.push(`<button class="round" data-m="convert" title="Convertir a MP4" ${engine.converting ? 'disabled' : ''}>${icon('convert')}</button>`);
   acts.push(`<span class="spacer"></span><button class="stamp ic" data-m="editor" title="Al editor" ${!editSource(it) ? 'disabled' : ''}>${icon('timeline')}</button>`);
   $('mActions').innerHTML = acts.join('');
+}
+/* reproductor propio de la ventana: controles debajo del video, no encima */
+function wirePlayer(v) {
+  const btn = $('mPlay'), seek = $('mSeek'), tm = $('mTime');
+  const sync = () => { btn.innerHTML = icon(v.paused ? 'play' : 'pause'); if (!seek._drag && v.duration) seek.value = Math.round(v.currentTime / v.duration * 1000); tm.textContent = `${fmtShort(v.currentTime) === '—' ? '0.0 s' : fmtShort(v.currentTime)} / ${fmtShort(v.duration)}`; };
+  ['play', 'pause', 'timeupdate', 'loadedmetadata', 'ended'].forEach(ev => v.addEventListener(ev, sync));
+  btn.onclick = () => v.paused ? v.play().catch(() => {}) : v.pause();
+  v.onclick = btn.onclick;
+  seek.oninput = () => { seek._drag = true; if (v.duration) v.currentTime = seek.value / 1000 * v.duration; };
+  seek.onchange = () => { seek._drag = false; };
+  sync();
 }
 function closePreview() {
   $('ov').classList.remove('show'); modalId = null;
@@ -774,7 +790,7 @@ const ovEls = new Map();
 function ovEl(layer) {
   let el = ovEls.get(layer.id);
   if (!el) {
-    el = document.createElement('video'); el.playsInline = true; el.muted = true; el.preload = 'auto';
+    el = document.createElement('video'); el.playsInline = true; el.muted = true; el.preload = 'auto'; el.poster = NOPOSTER;
     el.addEventListener('seeked', () => { if (el._want != null) { const t = el._want; el._want = null; el.currentTime = t; } });
     ovEls.set(layer.id, el);
   }
@@ -1767,6 +1783,7 @@ document.addEventListener('keydown', e => {
 /* ================= arranque ================= */
 async function init() {
   paintIcons(); syncNight(); syncSnapBtn(); renderOut();
+  vA.poster = NOPOSTER; vB.poster = NOPOSTER;
   $('playBtn').innerHTML = icon('play');
   const saved = await DB.allItems();
   if (saved && saved.length) lib.items = saved.map(s => ({ ...s, progress: 0 }));
